@@ -4,7 +4,7 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var camera = Camera240Manager()
-    @State private var serverIP: String = "192.168.1.50"
+    @State private var serverIP: String = "192.168.0.112"
     
     var body: some View {
         ZStack {
@@ -138,8 +138,14 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     private func uploadVideoToPC(fileURL: URL) {
-        guard let url = URL(string: "http://\(targetServerIP):8080/api/analyze_video") else {
-            statusMessage = "IPアドレス無効"
+        let cleanIP = targetServerIP.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: ":8080", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        
+        guard let url = URL(string: "http://\(cleanIP):8080/api/analyze_video") else {
+            statusMessage = "❌ IPアドレス無効: \(cleanIP)"
             isUploading = false
             return
         }
@@ -147,14 +153,22 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 60
         
-        let task = URLSession.shared.uploadTask(with: request, fromFile: fileURL) { _, response, error in
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
+        let session = URLSession(configuration: config)
+        
+        let task = session.uploadTask(with: request, fromFile: fileURL) { _, response, error in
             DispatchQueue.main.async {
                 self.isUploading = false
                 if let httpRes = response as? HTTPURLResponse, httpRes.statusCode == 200 {
                     self.statusMessage = "✅ PCへ転送完了 (AI解析開始)"
+                } else if let error = error {
+                    self.statusMessage = "❌ 失敗: \(error.localizedDescription)"
                 } else {
-                    self.statusMessage = "❌ 転送失敗 (PCサーバー確認)"
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    self.statusMessage = "❌ 失敗: HTTP \(code)"
                 }
             }
         }
