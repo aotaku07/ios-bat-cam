@@ -1,0 +1,43 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: XcodeGenのインストール
+        run: brew install xcodegen
+
+      - name: Xcodeプロジェクトの自動生成
+        run: xcodegen generate
+
+      - name: 未署名IPAのビルド
+        run: |
+          xcodebuild clean build \
+            -project BatCam240.xcodeproj \
+            -scheme BatCam240 \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          # IPAパッケージの作成 (Payload構造)
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/BatCam240.app Payload/
+          zip -r BatCam240.ipa Payload
+
+      - name: 完成したIPAファイルのアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatCam240-IPA
+          path: BatCam240.ipa
