@@ -25,7 +25,7 @@ jobs:
             -project BatCam240.xcodeproj \
             -scheme BatCam240 \
             -configuration Release \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
