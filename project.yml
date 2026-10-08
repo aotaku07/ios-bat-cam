@@ -11,4 +11,11 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.amsp.batcam240
       DEVELOPMENT_TEAM: ""
       CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGN_IDENTITY: ""
       INFOPLIST_FILE: BatCam240/Info.plist
+schemes:
+  BatCam240:
+    build:
+      targets:
+        BatCam240: all
