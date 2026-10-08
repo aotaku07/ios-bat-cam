@@ -18,9 +18,13 @@
     <true/>
     <key>NSCameraUsageDescription</key>
     <string>バッティングスイング解析のためにカメラを使用します</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>パソコンの解析サーバーへスイング動画を転送するためにローカルネットワークを使用します</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
     <key>UILaunchScreen</key>
