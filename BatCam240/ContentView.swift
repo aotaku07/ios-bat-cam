@@ -71,7 +71,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.1")
+                        Text("v2.2")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -273,11 +273,15 @@ struct ContentView: View {
 }
 
 // ─────────────────────────────────────────────
-// 240fps カメラマネージャー & 遠隔同期
+// 240fps カメラマネージャー & 遠隔同期 (毎秒2コマ プレビュー送信対応)
 // ─────────────────────────────────────────────
-class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
     private let movieOutput = AVCaptureMovieFileOutput()
+    private let videoDataOutput = AVCaptureVideoDataOutput()
+    private let previewQueue = DispatchQueue(label: "com.amsp.previewQueue")
+    private var lastPreviewSentTime: TimeInterval = 0
+    private var isSendingPreview: Bool = false
     
     private var currentControllerIP: String = ""
     private var currentAnalysisIP: String = ""
@@ -304,6 +308,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         
         if session.canAddInput(input) { session.addInput(input) }
         if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
+        if session.canAddOutput(videoDataOutput) {
+            videoDataOutput.alwaysDiscardsLateVideoFrames = true
+            videoDataOutput.setSampleBufferDelegate(self, queue: previewQueue)
+            session.addOutput(videoDataOutput)
+        }
         
         var targetFPS: Int = 30
         var bestFormat: AVCaptureDevice.Format?
@@ -556,6 +565,45 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             }
         }
         task.resume()
+    }
+
+    // ─────────────────────────────────────────────
+    // 毎秒2コマ (2fps) リアルタイムプレビュー配信
+    // ─────────────────────────────────────────────
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // 録画中・アップロード中・停止中はプレビュー配信をスキップしてリソース保護
+        guard !isRecording, !isUploading, isListening, !isSendingPreview else { return }
+        
+        let now = Date().timeIntervalSince1970
+        guard now - lastPreviewSentTime >= 0.5 else { return } // 0.5秒おき (毎秒2コマ)
+        
+        lastPreviewSentTime = now
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        
+        let image = UIImage(cgImage: cgImage)
+        guard let jpegData = image.jpegData(compressionQuality: 0.45) else { return }
+        
+        sendPreviewFrame(jpegData)
+    }
+    
+    private func sendPreviewFrame(_ data: Data) {
+        let cleanIP = sanitizeIP(currentControllerIP)
+        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)") else { return }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        request.timeoutInterval = 1.5
+        
+        isSendingPreview = true
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            self?.isSendingPreview = false
+        }.resume()
     }
     
     private func sanitizeIP(_ ip: String) -> String {
