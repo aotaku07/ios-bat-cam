@@ -12,75 +12,151 @@ struct ContentView: View {
     @AppStorage("remoteEnabled") private var remoteEnabled: Bool = true
     
     @State private var showSettings: Bool = false
+    @State private var baseZoom: CGFloat = 1.0
 
     var body: some View {
         ZStack {
-            // カメラプレビュー
+            // カメラプレビュー & ピンチズームジェスチャー
             CameraPreview(session: camera.session)
                 .ignoresSafeArea()
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let target = baseZoom * value
+                            camera.setZoom(factor: target)
+                        }
+                        .onEnded { _ in
+                            baseZoom = camera.currentZoomFactor
+                        }
+                )
             
-            // 録画中の赤枠アニメーション
+            // 録画中の極太赤枠（三脚や遠くからでも一目で分かる）
             if camera.isRecording {
                 Rectangle()
-                    .stroke(Color.red, lineWidth: 6)
+                    .stroke(Color.red, lineWidth: 10)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
 
             VStack {
-                // 上部ステータスバー
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(camera.isRecording ? Color.red : (camera.isUploading ? Color.yellow : Color.green))
-                        .frame(width: 14, height: 14)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(camera.statusMessage)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                            Text("v2.0")
-                                .font(.system(size: 10, weight: .heavy))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.yellow)
-                                .foregroundColor(.black)
-                                .cornerRadius(4)
+                // ─────────────────────────────────────────────
+                // 上部ステータスHUD (超特大で視認性抜群)
+                // ─────────────────────────────────────────────
+                VStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(camera.isRecording ? Color.red : (camera.isUploading ? Color.yellow : Color.green))
+                            .frame(width: 18, height: 18)
+                        
+                        if camera.isRecording {
+                            if camera.isAutoCountingDown {
+                                Text("🔴 REC 録画中 (残り \(camera.remainingSeconds)秒)")
+                                    .font(.system(size: 18, weight: .black))
+                                    .foregroundColor(.red)
+                            } else {
+                                Text("🔴 REC 録画中...")
+                                    .font(.system(size: 18, weight: .black))
+                                    .foregroundColor(.red)
+                            }
+                        } else if camera.isUploading {
+                            Text("⏳ 解析PCへ送信中...")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.yellow)
+                        } else {
+                            Text("🟢 待機中 (PCからの合図待ち)")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundColor(.green)
                         }
                         
-                        Text("カメラ役割: \(cameraRole == "cam_side" ? "📐 側面 (cam_side)" : "⚾ 正面 (cam_front)")")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                        
+                        // バージョンバッジ
+                        Text("v2.1")
+                            .font(.system(size: 11, weight: .heavy))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.yellow)
+                            .foregroundColor(.black)
+                            .cornerRadius(4)
+                        
+                        Button(action: { showSettings.toggle() }) {
+                            Image(systemName: "gearshape.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 16))
+                                .padding(8)
+                                .background(Color.black.opacity(0.6))
+                                .clipShape(Circle())
+                        }
                     }
                     
-                    Spacer()
-                    
-                    Button(action: { showSettings.toggle() }) {
-                        Image(systemName: "gearshape.fill")
+                    // サブ情報バー
+                    HStack {
+                        Text("役割: \(cameraRole == "cam_side" ? "📐 側面カメラ" : "⚾ 正面カメラ")")
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Circle())
+                        
+                        Spacer()
+                        
+                        Text(camera.statusMessage)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.85))
+                            .lineLimit(1)
                     }
                 }
-                .padding(10)
-                .background(Color.black.opacity(0.75))
-                .cornerRadius(10)
+                .padding(12)
+                .background(Color.black.opacity(0.85))
+                .cornerRadius(12)
                 .frame(maxWidth: 600)
                 .padding(.horizontal)
                 .padding(.top, 4)
 
                 Spacer()
 
+                // ─────────────────────────────────────────────
+                // 手動ズームコントロール (1x / 1.5x / 2x / 3x)
+                // ─────────────────────────────────────────────
+                HStack(spacing: 12) {
+                    Text("🔍 ズーム:")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                    
+                    ForEach([1.0, 1.5, 2.0, 3.0], id: \.self) { z in
+                        Button(action: {
+                            baseZoom = CGFloat(z)
+                            camera.setZoom(factor: CGFloat(z))
+                        }) {
+                            Text(String(format: "%.1fx", z))
+                                .font(.system(size: 13, weight: .heavy))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.yellow : Color.black.opacity(0.6))
+                                .foregroundColor(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.black : Color.white)
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(20)
+                .frame(maxWidth: 600)
+                .padding(.bottom, 6)
+
+                // ─────────────────────────────────────────────
                 // 下部コントロールパネル
+                // ─────────────────────────────────────────────
                 VStack(spacing: 12) {
-                    // カメラ役割の簡単切り替え
+                    // カメラ役割の切り替え
                     HStack(spacing: 8) {
                         Button(action: {
                             cameraRole = "cam_side"
                             restartListening()
                         }) {
-                            Text("📐 側面カメラ")
+                            Text("📐 側面カメラ (cam_side)")
                                 .font(.system(size: 13, weight: .bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
@@ -93,7 +169,7 @@ struct ContentView: View {
                             cameraRole = "cam_front"
                             restartListening()
                         }) {
-                            Text("⚾ 正面カメラ")
+                            Text("⚾ 正面カメラ (cam_front)")
                                 .font(.system(size: 13, weight: .bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
@@ -107,27 +183,27 @@ struct ContentView: View {
                     if showSettings {
                         VStack(spacing: 8) {
                             HStack {
-                                Text("指示PC (現在):")
+                                Text("指示PC IP:")
                                     .font(.caption)
                                     .foregroundColor(.white)
-                                    .frame(width: 95, alignment: .leading)
+                                    .frame(width: 85, alignment: .leading)
                                 TextField("192.168.0.112", text: $controllerIP)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                                     .font(.caption)
                             }
 
                             HStack {
-                                Text("解析PC (別PC):")
+                                Text("解析PC IP:")
                                     .font(.caption)
                                     .foregroundColor(.white)
-                                    .frame(width: 95, alignment: .leading)
-                                TextField("空欄なら指示PCへ", text: $analysisIP)
+                                    .frame(width: 85, alignment: .leading)
+                                TextField("空欄なら指示PCへ送信", text: $analysisIP)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                                     .font(.caption)
                             }
 
                             Toggle(isOn: $remoteEnabled) {
-                                Text("PC遠隔トリガーを自動受信")
+                                Text("PC遠隔トリガーを受信 (常時スタンバイ)")
                                     .font(.caption)
                                     .foregroundColor(.white)
                             }
@@ -149,7 +225,12 @@ struct ContentView: View {
                                 cameraRole: cameraRole
                             )
                         } else {
-                            camera.startRecording()
+                            camera.startRecording(
+                                autoDuration: 0,
+                                controllerIP: controllerIP,
+                                analysisIP: analysisIP,
+                                cameraRole: cameraRole
+                            )
                         }
                     }) {
                         HStack {
@@ -166,13 +247,12 @@ struct ContentView: View {
                 }
                 .padding()
                 .frame(maxWidth: 600)
-                .background(Color.black.opacity(0.75))
+                .background(Color.black.opacity(0.85))
                 .cornerRadius(14)
                 .padding(.bottom, 8)
             }
         }
         .onAppear {
-            // スリープ（画面自動消灯）を無効化
             UIApplication.shared.isIdleTimerDisabled = true
             camera.setup240fpsCamera()
             restartListening()
@@ -193,7 +273,7 @@ struct ContentView: View {
 }
 
 // ─────────────────────────────────────────────
-// 240fps カメラマネージャー & 遠隔トリガー
+// 240fps カメラマネージャー & 遠隔同期
 // ─────────────────────────────────────────────
 class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
     let session = AVCaptureSession()
@@ -205,9 +285,13 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     
     private var isListening: Bool = false
     private var listeningTask: URLSessionDataTask?
+    private var countdownTimer: Timer?
     
     @Published var isRecording = false
     @Published var isUploading = false
+    @Published var isAutoCountingDown = false
+    @Published var remainingSeconds = 0
+    @Published var currentZoomFactor: CGFloat = 1.0
     @Published var statusMessage = "待機中 (240fps スタンバイ)"
     
     func setup240fpsCamera() {
@@ -224,7 +308,6 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         var targetFPS: Int = 30
         var bestFormat: AVCaptureDevice.Format?
         
-        // デバイスの最高フレームレート (240fps -> 120fps -> 60fps) を自動探索
         for desiredFPS in [240, 120, 60] {
             for format in device.formats {
                 for range in format.videoSupportedFrameRateRanges {
@@ -256,6 +339,25 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         
         session.commitConfiguration()
         DispatchQueue.global(qos: .userInitiated).async { self.session.startRunning() }
+    }
+    
+    // ─────────────────────────────────────────────
+    // ズーム設定
+    // ─────────────────────────────────────────────
+    func setZoom(factor: CGFloat) {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { return }
+        do {
+            try device.lockForConfiguration()
+            let maxZoom = min(device.activeFormat.videoMaxZoomFactor, 5.0)
+            let clamped = max(1.0, min(factor, maxZoom))
+            device.videoZoomFactor = clamped
+            device.unlockForConfiguration()
+            DispatchQueue.main.async {
+                self.currentZoomFactor = clamped
+            }
+        } catch {
+            print("Zoom error:", error)
+        }
     }
     
     // ─────────────────────────────────────────────
@@ -300,23 +402,25 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let action = json["action"] as? String {
                 
-                let duration = json["duration"] as? Double ?? 0.0
+                // duration を安全にパース (NSNumber, Double, String どの型でも対応)
+                var duration: Double = 0.0
+                if let num = json["duration"] as? NSNumber {
+                    duration = num.doubleValue
+                } else if let d = json["duration"] as? Double {
+                    duration = d
+                } else if let s = json["duration"] as? String, let d = Double(s) {
+                    duration = d
+                }
                 
                 DispatchQueue.main.async {
                     if action == "START" {
                         if !self.isRecording {
-                            self.startRecording()
-                            if duration > 0 {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                                    if self.isRecording {
-                                        self.stopRecordingAndUpload(
-                                            controllerIP: self.currentControllerIP,
-                                            analysisIP: self.currentAnalysisIP,
-                                            cameraRole: self.currentCameraRole
-                                        )
-                                    }
-                                }
-                            }
+                            self.startRecording(
+                                autoDuration: duration,
+                                controllerIP: self.currentControllerIP,
+                                analysisIP: self.currentAnalysisIP,
+                                cameraRole: self.currentCameraRole
+                            )
                         }
                     } else if action == "STOP" {
                         if self.isRecording {
@@ -341,19 +445,52 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     // ─────────────────────────────────────────────
-    // 録画の開始・停止
+    // 録画の開始・停止 (カウントダウン自動停止付き)
     // ─────────────────────────────────────────────
-    func startRecording() {
+    func startRecording(autoDuration: Double = 0, controllerIP: String = "", analysisIP: String = "", cameraRole: String = "") {
         guard !isRecording else { return }
+        if !controllerIP.isEmpty { self.currentControllerIP = controllerIP }
+        if !analysisIP.isEmpty { self.currentAnalysisIP = analysisIP }
+        if !cameraRole.isEmpty { self.currentCameraRole = cameraRole }
+        
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("swing_240fps.mp4")
         try? FileManager.default.removeItem(at: tempURL)
         movieOutput.startRecording(to: tempURL, recordingDelegate: self)
+        
         isRecording = true
         statusMessage = "🔴 240fps 録画中..."
+        
+        // 自動停止タイマー (画面カウントダウン表示 & 時間切れで確実停止)
+        countdownTimer?.invalidate()
+        if autoDuration > 0 {
+            isAutoCountingDown = true
+            remainingSeconds = Int(ceil(autoDuration))
+            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
+                guard let self = self else { return }
+                self.remainingSeconds -= 1
+                if self.remainingSeconds <= 0 {
+                    t.invalidate()
+                    self.isAutoCountingDown = false
+                    if self.isRecording {
+                        print("[AutoStopTimer] Countdown finished. Stopping recording automatically...")
+                        self.stopRecordingAndUpload(
+                            controllerIP: self.currentControllerIP,
+                            analysisIP: self.currentAnalysisIP,
+                            cameraRole: self.currentCameraRole
+                        )
+                    }
+                }
+            }
+        } else {
+            isAutoCountingDown = false
+        }
     }
     
     func stopRecordingAndUpload(controllerIP: String, analysisIP: String, cameraRole: String) {
         guard isRecording else { return }
+        countdownTimer?.invalidate()
+        isAutoCountingDown = false
+        
         self.currentControllerIP = controllerIP
         self.currentAnalysisIP = analysisIP
         self.currentCameraRole = cameraRole
@@ -378,7 +515,6 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     // 解析PCへ動画アップロード
     // ─────────────────────────────────────────────
     private func uploadVideo(fileURL: URL) {
-        // 解析PCのIPが空なら、指示PCのIPへ送る
         let targetRawIP = currentAnalysisIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? currentControllerIP
             : currentAnalysisIP
@@ -390,6 +526,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             pollNextCommand()
             return
         }
+        
+        statusMessage = "⏳ 送信中 (-> \(cleanIP):8080)..."
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -405,12 +543,12 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             DispatchQueue.main.async {
                 self.isUploading = false
                 if let httpRes = response as? HTTPURLResponse, httpRes.statusCode == 200 {
-                    self.statusMessage = "✅ 送信完了！(次回撮影 待機中)"
+                    self.statusMessage = "✅ 送信完了！(\(self.currentCameraRole))"
                 } else if let error = error {
-                    self.statusMessage = "❌ 送信失敗: \(error.localizedDescription)"
+                    self.statusMessage = "❌ 送信失敗(\(cleanIP)): \(error.localizedDescription)"
                 } else {
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    self.statusMessage = "❌ 送信失敗: HTTP \(code)"
+                    self.statusMessage = "❌ 送信失敗: HTTP \(code) (\(cleanIP))"
                 }
                 
                 // 送信完了後、再びPC待機ループに戻る
