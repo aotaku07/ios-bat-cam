@@ -66,6 +66,7 @@ struct ContentView: View {
                 .padding(10)
                 .background(Color.black.opacity(0.75))
                 .cornerRadius(10)
+                .frame(maxWidth: 600)
                 .padding(.horizontal)
                 .padding(.top, 4)
 
@@ -80,9 +81,9 @@ struct ContentView: View {
                             restartListening()
                         }) {
                             Text("📐 側面カメラ")
-                                .font(.system(size: 12, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .padding(.vertical, 10)
                                 .background(cameraRole == "cam_side" ? Color.blue : Color.white.opacity(0.15))
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
@@ -93,9 +94,9 @@ struct ContentView: View {
                             restartListening()
                         }) {
                             Text("⚾ 正面カメラ")
-                                .font(.system(size: 12, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .padding(.vertical, 10)
                                 .background(cameraRole == "cam_front" ? Color.blue : Color.white.opacity(0.15))
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
@@ -164,7 +165,10 @@ struct ContentView: View {
                     }
                 }
                 .padding()
+                .frame(maxWidth: 600)
                 .background(Color.black.opacity(0.75))
+                .cornerRadius(14)
+                .padding(.bottom, 8)
             }
         }
         .onAppear {
@@ -217,13 +221,20 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         if session.canAddInput(input) { session.addInput(input) }
         if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
         
+        var targetFPS: Int = 30
         var bestFormat: AVCaptureDevice.Format?
-        for format in device.formats {
-            for range in format.videoSupportedFrameRateRanges {
-                if range.maxFrameRate >= 240.0 {
-                    bestFormat = format
-                    break
+        
+        // デバイスの最高フレームレート (240fps -> 120fps -> 60fps) を自動探索
+        for desiredFPS in [240, 120, 60] {
+            for format in device.formats {
+                for range in format.videoSupportedFrameRateRanges {
+                    if range.maxFrameRate >= Double(desiredFPS) {
+                        bestFormat = format
+                        targetFPS = desiredFPS
+                        break
+                    }
                 }
+                if bestFormat != nil { break }
             }
             if bestFormat != nil { break }
         }
@@ -232,15 +243,15 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             do {
                 try device.lockForConfiguration()
                 device.activeFormat = format
-                device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 240)
-                device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 240)
+                device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
+                device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
                 device.unlockForConfiguration()
-                statusMessage = "✅ 240fps ロック成功 (PC待機中)"
+                statusMessage = "✅ \(targetFPS)fps ロック成功 (PC待機中)"
             } catch {
-                statusMessage = "FPS設定失敗"
+                statusMessage = "FPS設定失敗 (通常モード)"
             }
         } else {
-            statusMessage = "⚠️ 240fps非対応デバイス"
+            statusMessage = "✅ 標準カメラで起動 (PC待機中)"
         }
         
         session.commitConfiguration()
