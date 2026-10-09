@@ -35,9 +35,18 @@ struct ContentView: View {
                         .frame(width: 14, height: 14)
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(camera.statusMessage)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.white)
+                        HStack(spacing: 6) {
+                            Text(camera.statusMessage)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                            Text("v2.0")
+                                .font(.system(size: 10, weight: .heavy))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.yellow)
+                                .foregroundColor(.black)
+                                .cornerRadius(4)
+                        }
                         
                         Text("カメラ役割: \(cameraRole == "cam_side" ? "📐 側面 (cam_side)" : "⚾ 正面 (cam_front)")")
                             .font(.system(size: 11))
