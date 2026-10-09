@@ -13,6 +13,7 @@ targets:
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGNING_REQUIRED: NO
       CODE_SIGN_IDENTITY: ""
+      TARGETED_DEVICE_FAMILY: "1,2"
       INFOPLIST_FILE: BatCam240/Info.plist
 schemes:
   BatCam240:
