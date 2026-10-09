@@ -8,11 +8,21 @@ struct ContentView: View {
     // 設定の永続化
     @AppStorage("controllerIP") private var controllerIP: String = "192.168.0.112"
     @AppStorage("analysisIP") private var analysisIP: String = ""
-    @AppStorage("cameraRole") private var cameraRole: String = "cam_side" // "cam_side" or "cam_front"
+    @AppStorage("cameraRole") private var cameraRole: String = "cam_side_right" // "cam_front", "cam_side_right", "cam_side_left"
+    @AppStorage("rotationAngle") private var rotationAngle: Int = 90 // デフォルト90度回転で左倒れ解消
     @AppStorage("remoteEnabled") private var remoteEnabled: Bool = true
     
     @State private var showSettings: Bool = false
     @State private var baseZoom: CGFloat = 1.0
+
+    private func roleDisplayName(_ role: String) -> String {
+        switch role {
+        case "cam_front": return "⚾ 正面カメラ (Front)"
+        case "cam_side_right": return "📐 右打席用 側面 (Right)"
+        case "cam_side_left": return "📐 左打席用 側面 (Left)"
+        default: return "📐 側面カメラ"
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -71,7 +81,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.2")
+                        Text("v2.3")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -91,7 +101,7 @@ struct ContentView: View {
                     
                     // サブ情報バー
                     HStack {
-                        Text("役割: \(cameraRole == "cam_side" ? "📐 側面カメラ" : "⚾ 正面カメラ")")
+                        Text("役割: \(roleDisplayName(cameraRole))")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                         
@@ -113,29 +123,58 @@ struct ContentView: View {
                 Spacer()
 
                 // ─────────────────────────────────────────────
-                // 手動ズームコントロール (1x / 1.5x / 2x / 3x)
+                // 手動ズームコントロール & 映像向き回転コントロール
                 // ─────────────────────────────────────────────
-                HStack(spacing: 12) {
-                    Text("🔍 ズーム:")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                    
-                    ForEach([1.0, 1.5, 2.0, 3.0], id: \.self) { z in
-                        Button(action: {
-                            baseZoom = CGFloat(z)
-                            camera.setZoom(factor: CGFloat(z))
-                        }) {
-                            Text(String(format: "%.1fx", z))
-                                .font(.system(size: 13, weight: .heavy))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.yellow : Color.black.opacity(0.6))
-                                .foregroundColor(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.black : Color.white)
-                                .cornerRadius(8)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                                )
+                VStack(spacing: 6) {
+                    // ズームバー
+                    HStack(spacing: 12) {
+                        Text("🔍 ズーム:")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        ForEach([1.0, 1.5, 2.0, 3.0], id: \.self) { z in
+                            Button(action: {
+                                baseZoom = CGFloat(z)
+                                camera.setZoom(factor: CGFloat(z))
+                            }) {
+                                Text(String(format: "%.1fx", z))
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.yellow : Color.black.opacity(0.6))
+                                    .foregroundColor(abs(camera.currentZoomFactor - CGFloat(z)) < 0.1 ? Color.black : Color.white)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                    )
+                            }
+                        }
+                    }
+
+                    // 向き・回転バー (0° / 90° / 180° / 270°)
+                    HStack(spacing: 10) {
+                        Text("🔄 向き:")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        ForEach([0, 90, 180, 270], id: \.self) { deg in
+                            Button(action: {
+                                rotationAngle = deg
+                                camera.setRotation(angle: deg)
+                            }) {
+                                Text("\(deg)°")
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(rotationAngle == deg ? Color.green : Color.black.opacity(0.6))
+                                    .foregroundColor(rotationAngle == deg ? Color.black : Color.white)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                    )
+                            }
                         }
                     }
                 }
@@ -150,30 +189,43 @@ struct ContentView: View {
                 // 下部コントロールパネル
                 // ─────────────────────────────────────────────
                 VStack(spacing: 12) {
-                    // カメラ役割の切り替え
-                    HStack(spacing: 8) {
+                    // カメラ役割の切り替え (正面 / 右打席側面 / 左打席側面)
+                    HStack(spacing: 6) {
                         Button(action: {
-                            cameraRole = "cam_side"
+                            cameraRole = "cam_front"
                             restartListening()
                         }) {
-                            Text("📐 側面カメラ (cam_side)")
-                                .font(.system(size: 13, weight: .bold))
+                            Text("⚾ 正面")
+                                .font(.system(size: 12, weight: .bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
-                                .background(cameraRole == "cam_side" ? Color.blue : Color.white.opacity(0.15))
+                                .background(cameraRole == "cam_front" ? Color.blue : Color.white.opacity(0.15))
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
                         }
 
                         Button(action: {
-                            cameraRole = "cam_front"
+                            cameraRole = "cam_side_right"
                             restartListening()
                         }) {
-                            Text("⚾ 正面カメラ (cam_front)")
-                                .font(.system(size: 13, weight: .bold))
+                            Text("📐 右打席 側面")
+                                .font(.system(size: 12, weight: .bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
-                                .background(cameraRole == "cam_front" ? Color.blue : Color.white.opacity(0.15))
+                                .background(cameraRole == "cam_side_right" ? Color.blue : Color.white.opacity(0.15))
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                        }
+
+                        Button(action: {
+                            cameraRole = "cam_side_left"
+                            restartListening()
+                        }) {
+                            Text("📐 左打席 側面")
+                                .font(.system(size: 12, weight: .bold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(cameraRole == "cam_side_left" ? Color.blue : Color.white.opacity(0.15))
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
                         }
@@ -254,6 +306,7 @@ struct ContentView: View {
         }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
+            camera.setRotation(angle: rotationAngle)
             camera.setup240fpsCamera()
             restartListening()
         }
@@ -282,10 +335,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     private let previewQueue = DispatchQueue(label: "com.amsp.previewQueue")
     private var lastPreviewSentTime: TimeInterval = 0
     private var isSendingPreview: Bool = false
+    private var currentRotationAngle: Int = 90
     
     private var currentControllerIP: String = ""
     private var currentAnalysisIP: String = ""
-    private var currentCameraRole: String = "cam_side"
+    private var currentCameraRole: String = "cam_side_right"
     
     private var isListening: Bool = false
     private var listeningTask: URLSessionDataTask?
@@ -297,6 +351,23 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     @Published var remainingSeconds = 0
     @Published var currentZoomFactor: CGFloat = 1.0
     @Published var statusMessage = "待機中 (240fps スタンバイ)"
+
+    func setRotation(angle: Int) {
+        currentRotationAngle = angle
+        updateMovieOrientation()
+    }
+    
+    func updateMovieOrientation() {
+        guard let connection = movieOutput.connection(with: .video) else { return }
+        if connection.isVideoOrientationSupported {
+            switch currentRotationAngle {
+            case 90: connection.videoOrientation = .portrait
+            case 180: connection.videoOrientation = .landscapeLeft
+            case 270: connection.videoOrientation = .portraitUpsideDown
+            default: connection.videoOrientation = .landscapeRight
+            }
+        }
+    }
     
     func setup240fpsCamera() {
         session.beginConfiguration()
@@ -347,6 +418,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         }
         
         session.commitConfiguration()
+        updateMovieOrientation()
         DispatchQueue.global(qos: .userInitiated).async { self.session.startRunning() }
     }
     
@@ -581,8 +653,22 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        
+        // 向き回転の適用 (0° / 90° / 180° / 270°) - デフォルト90°で左倒れ解消
+        var orientedImage = ciImage
+        switch currentRotationAngle {
+        case 90:
+            orientedImage = ciImage.oriented(.right) // 時計回り90度 (左倒れ完全解消)
+        case 180:
+            orientedImage = ciImage.oriented(.down)  // 180度
+        case 270:
+            orientedImage = ciImage.oriented(.left)  // 反時計回り90度
+        default:
+            break // 0度 (未回転)
+        }
+        
         let context = CIContext(options: [.useSoftwareRenderer: false])
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        guard let cgImage = context.createCGImage(orientedImage, from: orientedImage.extent) else { return }
         
         let image = UIImage(cgImage: cgImage)
         guard let jpegData = image.jpegData(compressionQuality: 0.45) else { return }
