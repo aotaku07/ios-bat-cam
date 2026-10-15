@@ -9,19 +9,19 @@
     <key>CFBundleName</key>
     <string>BatCam240</string>
     <key>CFBundleDisplayName</key>
-    <string>BatCam v2.5</string>
+    <string>BatCam v2.6</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.5</string>
+    <string>2.6</string>
     <key>CFBundleVersion</key>
-    <string>5</string>
+    <string>6</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSCameraUsageDescription</key>
     <string>バッティングスイング解析のためにカメラを使用します</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>チャープ同期音（5kHz〜12kHz）を検出してカメラ間の同期を行うためにマイクを使用します</string>
+    <string>チャープ同期音（2kHz〜5kHz）を検出してカメラ間の同期を行うためにマイクを使用します</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>パソコンの解析サーバーへスイング動画を転送するためにローカルネットワークを使用します</string>
     <key>NSAppTransportSecurity</key>

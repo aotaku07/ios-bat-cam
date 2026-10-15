@@ -140,7 +140,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.5")
+                        Text("v2.6")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1256,13 +1256,14 @@ class ChirpAudioDetector: ObservableObject {
     private let audioEngine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "com.amsp.chirpProcessing", qos: .userInitiated)
     
-    // チャープ波形パラメータ (5kHz -> 12kHz / 70ms)
-    private let fStart: Double = 5000.0
-    private let fEnd: Double = 12000.0
+    // チャープ波形パラメータ (2kHz -> 5kHz / 70ms: NS4168スピーカー最高音圧帯 & 環境ノイズ分離)
+    private let fStart: Double = 2000.0
+    private let fEnd: Double = 5000.0
     private let chirpDuration: Double = 0.070 // 70ms
     
-    // サンプルレート別 参照チャープ波形
-    private var referenceChirp: [Float] = []
+    // サンプルレート別 参照チャープ波形 (直交I/Q成分: 位相ずれに左右されない直交検波)
+    private var referenceChirpI: [Float] = []
+    private var referenceChirpQ: [Float] = []
     private var referenceNorm: Float = 1.0
     private var configuredSampleRate: Double = 0.0
     
@@ -1284,14 +1285,15 @@ class ChirpAudioDetector: ObservableObject {
         configuredSampleRate = sampleRate
         
         let nSamples = Int(sampleRate * chirpDuration)
-        referenceChirp = [Float](repeating: 0, count: nSamples)
+        referenceChirpI = [Float](repeating: 0, count: nSamples)
+        referenceChirpQ = [Float](repeating: 0, count: nSamples)
         let k = (fEnd - fStart) / chirpDuration
         
         var sumSq: Float = 0.0
         for i in 0..<nSamples {
             let t = Double(i) / sampleRate
             let phase = 2.0 * .pi * (fStart * t + 0.5 * k * t * t)
-            // Tukey窓（端部2msのみフェード）
+            // Tukey窓（端部3msのみフェード）
             let fadeSamples = max(1, Int(sampleRate * 0.003))
             var w: Double = 1.0
             if i < fadeSamples {
@@ -1299,9 +1301,11 @@ class ChirpAudioDetector: ObservableObject {
             } else if i >= nSamples - fadeSamples {
                 w = 0.5 * (1.0 - cos(.pi * Double(nSamples - 1 - i) / Double(fadeSamples)))
             }
-            let val = Float(w * sin(phase))
-            referenceChirp[i] = val
-            sumSq += val * val
+            let valI = Float(w * sin(phase))
+            let valQ = Float(w * cos(phase))
+            referenceChirpI[i] = valI
+            referenceChirpQ[i] = valQ
+            sumSq += valI * valI
         }
         referenceNorm = max(1e-6, sqrt(sumSq))
     }
@@ -1347,7 +1351,7 @@ class ChirpAudioDetector: ObservableObject {
             
             try audioEngine.start()
             isRunning = true
-            statusText = "🔊 マイク監視中 (5kHz-12kHz 待機)"
+            statusText = "🔊 マイク監視中 (2kHz-5kHz 待機)"
             print("[ChirpDetector] ✅ マイク監視開始 (SR: \(sampleRate)Hz)")
         } catch {
             statusText = "❌ マイク起動エラー: \(error.localizedDescription)"
@@ -1385,26 +1389,29 @@ class ChirpAudioDetector: ObservableObject {
             
             // 直前のオーバーラップデータと結合
             let fullData = self.overlapBuffer + newSamples
-            let refLen = self.referenceChirp.count
+            let refLen = self.referenceChirpI.count
             guard fullData.count >= refLen else {
                 self.overlapBuffer = fullData
                 return
             }
             
-            // スライディング正規化相互相関 (NCC)
-            // 高速化のためステップ幅 16 サンプルで走査
-            let step = 16
+            // スライディング直交正規化相互相関 (Quadrature NCC)
+            // キャリア位相(φ)依存性を完全排除し、微細ステップ(4サンプル)でピークを確実に捕捉
+            let step = 4
             let maxIndex = fullData.count - refLen
             var maxCorrelation: Float = 0.0
             
-            let ref = self.referenceChirp
+            let refI = self.referenceChirpI
+            let refQ = self.referenceChirpQ
             let refNorm = self.referenceNorm
             
             for i in stride(from: 0, through: maxIndex, by: step) {
-                var dotProd: Float = 0.0
+                var dotI: Float = 0.0
+                var dotQ: Float = 0.0
                 fullData.withUnsafeBufferPointer { fullPtr in
                     guard let basePtr = fullPtr.baseAddress else { return }
-                    vDSP_dotpr(basePtr + i, 1, ref, 1, &dotProd, vDSP_Length(refLen))
+                    vDSP_dotpr(basePtr + i, 1, refI, 1, &dotI, vDSP_Length(refLen))
+                    vDSP_dotpr(basePtr + i, 1, refQ, 1, &dotQ, vDSP_Length(refLen))
                 }
                 
                 // シグナル局所エネルギーの算出
@@ -1416,7 +1423,8 @@ class ChirpAudioDetector: ObservableObject {
                 
                 let sigNorm = sqrt(sigEnergySq)
                 if sigNorm > 1e-4 {
-                    let ncc = dotProd / (sigNorm * refNorm)
+                    let iqMag = sqrt(dotI * dotI + dotQ * dotQ)
+                    let ncc = iqMag / (sigNorm * refNorm)
                     if ncc > maxCorrelation {
                         maxCorrelation = ncc
                     }
@@ -1427,9 +1435,9 @@ class ChirpAudioDetector: ObservableObject {
             let keepCount = min(refLen - 1, fullData.count)
             self.overlapBuffer = Array(fullData.suffix(keepCount))
             
-            // しきい値判定 (NCC >= 0.40 で検出)
+            // しきい値判定 (直交NCC >= 0.35 で確実に検出)
             let now = Date().timeIntervalSince1970
-            if maxCorrelation >= 0.40 {
+            if maxCorrelation >= 0.35 {
                 if now - self.lastDetectionTimestamp > self.debounceInterval {
                     self.lastDetectionTimestamp = now
                     print(String(format: "[ChirpDetector] ⚡⚡⚡ CHIRP DETECTED! NCC=%.3f at %@", maxCorrelation, Date().description))
