@@ -1,9 +1,12 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import CoreMotion
+import Accelerate
 
 struct ContentView: View {
     @StateObject private var camera = Camera240Manager()
+    @StateObject private var chirpDetector = ChirpAudioDetector()
     
     // 設定の永続化
     @AppStorage("controllerIP") private var controllerIP: String = "192.168.0.112"
@@ -11,6 +14,10 @@ struct ContentView: View {
     @AppStorage("cameraRole") private var cameraRole: String = "cam_side_right" // "cam_front", "cam_side_right", "cam_side_left"
     @AppStorage("rotationAngle") private var rotationAngle: Int = 90 // デフォルト90度回転で左倒れ解消
     @AppStorage("remoteEnabled") private var remoteEnabled: Bool = true
+    @AppStorage("shutterSpeedDenominator") private var shutterSpeedDenominator: Double = 0 // 0 = Auto, 1000...2000 = Manual (1/x sec)
+    @AppStorage("aspectRatioMode") private var aspectRatioMode: String = "16:9" // "16:9", "16:8", "2.35:1"
+    @AppStorage("chirpDetectionEnabled") private var chirpDetectionEnabled: Bool = false
+    @AppStorage("cameraPowerMode") private var cameraPowerMode: String = "auto" // "auto", "manual_on", "manual_off"
     
     @State private var showSettings: Bool = false
     @State private var baseZoom: CGFloat = 1.0
@@ -26,19 +33,45 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // カメラプレビュー & ピンチズームジェスチャー
-            CameraPreview(session: camera.session)
-                .ignoresSafeArea()
-                .gesture(
-                    MagnificationGesture()
-                        .onChanged { value in
-                            let target = baseZoom * value
-                            camera.setZoom(factor: target)
+            // カメラプレビュー & ピンチズームジェスチャー (カメラ起動時のみ表示)
+            if camera.isCameraRunning {
+                CameraPreview(session: camera.session)
+                    .ignoresSafeArea()
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let target = baseZoom * value
+                                camera.setZoom(factor: target)
+                            }
+                            .onEnded { _ in
+                                baseZoom = camera.currentZoomFactor
+                            }
+                    )
+            } else {
+                // カメラ省電力スリープ表示（キオスクのready待機時）
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    VStack(spacing: 14) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 54))
+                            .foregroundColor(.gray)
+                        Text("💤 カメラ待機中 (省電力モード)")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.white)
+                        if cameraPowerMode == "auto" {
+                            Text("キオスクがプレビュー画面（Ready）に遷移すると\n自動でカメラが起動します")
+                                .font(.system(size: 13))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                        } else {
+                            Text("カメラは強制OFFモードに設定されています")
+                                .font(.system(size: 13))
+                                .foregroundColor(.red.opacity(0.8))
                         }
-                        .onEnded { _ in
-                            baseZoom = camera.currentZoomFactor
-                        }
-                )
+                    }
+                    .padding()
+                }
+            }
             
             // 録画中の極太赤枠（三脚や遠くからでも一目で分かる）
             if camera.isRecording {
@@ -47,6 +80,32 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
+
+            // 撮影画角・比率調整マスク (上下余計なスペースを遮蔽し左右両打席に集中)
+            if aspectRatioMode != "16:9" {
+                GeometryReader { geo in
+                    let maskH = (aspectRatioMode == "2.35:1") ? geo.size.height * 0.16 : geo.size.height * 0.08
+                    VStack(spacing: 0) {
+                        ZStack(alignment: .bottom) {
+                            Color.black.opacity(0.60)
+                            Rectangle().fill(Color.yellow.opacity(0.85)).frame(height: 1.5)
+                        }
+                        .frame(height: maskH)
+                        
+                        Spacer()
+                        
+                        ZStack(alignment: .top) {
+                            Color.black.opacity(0.60)
+                            Rectangle().fill(Color.yellow.opacity(0.85)).frame(height: 1.5)
+                        }
+                        .frame(height: maskH)
+                    }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                }
+            }
+
+
 
             VStack {
                 // ─────────────────────────────────────────────
@@ -81,7 +140,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.3")
+                        Text("v2.5")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -104,6 +163,7 @@ struct ContentView: View {
                         Text("役割: \(roleDisplayName(cameraRole))")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
+
                         
                         Spacer()
                         
@@ -119,6 +179,100 @@ struct ContentView: View {
                 .frame(maxWidth: 600)
                 .padding(.horizontal)
                 .padding(.top, 4)
+
+                // ─────────────────────────────────────────────
+                // チャープ音検出コントロールバー (ON/OFF & 検出回数表示)
+                // ─────────────────────────────────────────────
+                HStack(spacing: 10) {
+                    // ON/OFF 切り替えボタン
+                    Button(action: {
+                        chirpDetectionEnabled.toggle()
+                        if chirpDetectionEnabled {
+                            chirpDetector.startDetection()
+                        } else {
+                            chirpDetector.stopDetection()
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: chirpDetectionEnabled ? "mic.fill" : "mic.slash.fill")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(chirpDetectionEnabled ? "🔊 チャープ検出: ON" : "🔇 チャープ検出: OFF")
+                                .font(.system(size: 12, weight: .heavy))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(chirpDetectionEnabled ? Color.green : Color.gray.opacity(0.5))
+                        .foregroundColor(chirpDetectionEnabled ? .black : .white)
+                        .cornerRadius(8)
+                    }
+
+                    // 検出回数バッジ (オン〜オフまでの累計回数)
+                    HStack(spacing: 5) {
+                        Text("検出回数:")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white.opacity(0.8))
+                        Text("\(chirpDetector.chirpCount) 回")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(chirpDetector.chirpCount > 0 ? .yellow : .white)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.6))
+                    .cornerRadius(8)
+
+                    // カウントクリアボタン
+                    if chirpDetector.chirpCount > 0 {
+                        Button(action: {
+                            chirpDetector.resetCount()
+                        }) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                                .padding(6)
+                                .background(Color.white.opacity(0.2))
+                                .clipShape(Circle())
+                        }
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.80))
+                .cornerRadius(10)
+                .frame(maxWidth: 600)
+                .padding(.horizontal)
+                .padding(.top, 2)
+
+                // ─────────────────────────────────────────────
+                // ★ チャープ音検出時の特大ポップアップバナー
+                // ─────────────────────────────────────────────
+                if chirpDetector.isRecentlyDetected {
+                    HStack(spacing: 12) {
+                        Image(systemName: "bolt.fill")
+                            .foregroundColor(.yellow)
+                            .font(.system(size: 26))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("⚡ チャープ同期音 (5kHz-12kHz) を検出！")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundColor(.yellow)
+                            Text("今回セッション累計: \(chirpDetector.chirpCount) 回検出")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.92))
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.yellow, lineWidth: 2)
+                    )
+                    .shadow(color: .yellow.opacity(0.6), radius: 10)
+                    .padding(.top, 6)
+                    .transition(.scale.combined(with: .opacity))
+                }
 
                 Spacer()
 
@@ -177,6 +331,120 @@ struct ContentView: View {
                             }
                         }
                     }
+
+                    // 撮影画角・比率バー (16:9 / 16:8 / 2.35:1)
+                    HStack(spacing: 8) {
+                        Text("📐 比率:")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        ForEach(["16:9", "16:8", "2.35:1"], id: \.self) { ratio in
+                            Button(action: {
+                                aspectRatioMode = ratio
+                            }) {
+                                Text(ratio == "16:9" ? "16:9 (フル)" : (ratio == "16:8" ? "16:8 (ワイド)" : "2.35:1 (シネマ)"))
+                                    .font(.system(size: 11, weight: .heavy))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(aspectRatioMode == ratio ? Color.cyan : Color.black.opacity(0.6))
+                                    .foregroundColor(aspectRatioMode == ratio ? Color.black : Color.white)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                    )
+                            }
+                        }
+                    }
+
+                    Divider().background(Color.white.opacity(0.2))
+
+                    // ─────────────────────────────────────────────
+                    // シャッタースピード設定 (1/1000 〜 1/2000秒 マニュアル調整 & オート)
+                    // ─────────────────────────────────────────────
+                    VStack(spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text("⚡ シャッター:")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.white)
+                            
+                            Text(shutterSpeedDenominator <= 0 ? "自動 (Auto)" : "1/\(Int(shutterSpeedDenominator))秒")
+                                .font(.system(size: 11, weight: .heavy))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(shutterSpeedDenominator <= 0 ? Color.green.opacity(0.25) : Color.yellow.opacity(0.25))
+                                .foregroundColor(shutterSpeedDenominator <= 0 ? .green : .yellow)
+                                .cornerRadius(6)
+                            
+                            Spacer()
+                            
+                            // Auto 復帰ボタン
+                            Button(action: {
+                                shutterSpeedDenominator = 0
+                                camera.setShutterSpeed(denominator: 0)
+                            }) {
+                                Text("Auto")
+                                    .font(.system(size: 11, weight: .heavy))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(shutterSpeedDenominator <= 0 ? Color.green : Color.black.opacity(0.6))
+                                    .foregroundColor(shutterSpeedDenominator <= 0 ? .black : .white)
+                                    .cornerRadius(6)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                    )
+                            }
+                            
+                            // プリセットボタン (1/1000, 1/1500, 1/2000)
+                            ForEach([1000.0, 1500.0, 2000.0], id: \.self) { speed in
+                                Button(action: {
+                                    shutterSpeedDenominator = speed
+                                    camera.setShutterSpeed(denominator: speed)
+                                }) {
+                                    Text("1/\(Int(speed))")
+                                        .font(.system(size: 11, weight: .heavy))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 4)
+                                        .background(abs(shutterSpeedDenominator - speed) < 1.0 ? Color.yellow : Color.black.opacity(0.6))
+                                        .foregroundColor(abs(shutterSpeedDenominator - speed) < 1.0 ? .black : .white)
+                                        .cornerRadius(6)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                        )
+                                }
+                            }
+                        }
+                        
+                        // 1000〜2000 のマニュアル微調整スライダー (50単位でステップ調整)
+                        if shutterSpeedDenominator > 0 {
+                            HStack(spacing: 8) {
+                                Text("1/1000s")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.7))
+                                
+                                Slider(
+                                    value: Binding(
+                                        get: { shutterSpeedDenominator },
+                                        set: { newVal in
+                                            let snapped = round(newVal / 50.0) * 50.0
+                                            shutterSpeedDenominator = snapped
+                                            camera.setShutterSpeed(denominator: snapped)
+                                        }
+                                    ),
+                                    in: 1000...2000,
+                                    step: 50
+                                )
+                                .accentColor(.yellow)
+                                
+                                Text("1/2000s")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                            .padding(.top, 2)
+                        }
+                    }
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 16)
@@ -189,6 +457,63 @@ struct ContentView: View {
                 // 下部コントロールパネル
                 // ─────────────────────────────────────────────
                 VStack(spacing: 12) {
+                    // ─────────────────────────────────────────────
+                    // カメラ電源モード切替 (自動キオスク連動 / 強制ON / 強制OFF)
+                    // ─────────────────────────────────────────────
+                    HStack(spacing: 6) {
+                        Text("📷 電源:")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+
+                        Button(action: {
+                            cameraPowerMode = "auto"
+                            camera.setPowerMode("auto")
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "bolt.badge.automatic.fill")
+                                Text("自動 (連動)")
+                            }
+                            .font(.system(size: 11, weight: .heavy))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(cameraPowerMode == "auto" ? Color.green : Color.white.opacity(0.15))
+                            .foregroundColor(cameraPowerMode == "auto" ? .black : .white)
+                            .cornerRadius(7)
+                        }
+
+                        Button(action: {
+                            cameraPowerMode = "manual_on"
+                            camera.setPowerMode("manual_on")
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "video.fill")
+                                Text("常時ON")
+                            }
+                            .font(.system(size: 11, weight: .heavy))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(cameraPowerMode == "manual_on" ? Color.orange : Color.white.opacity(0.15))
+                            .foregroundColor(cameraPowerMode == "manual_on" ? .black : .white)
+                            .cornerRadius(7)
+                        }
+
+                        Button(action: {
+                            cameraPowerMode = "manual_off"
+                            camera.setPowerMode("manual_off")
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "video.slash.fill")
+                                Text("常時OFF")
+                            }
+                            .font(.system(size: 11, weight: .heavy))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(cameraPowerMode == "manual_off" ? Color.red : Color.white.opacity(0.15))
+                            .foregroundColor(cameraPowerMode == "manual_off" ? .white : .white)
+                            .cornerRadius(7)
+                        }
+                    }
+
                     // カメラ役割の切り替え (正面 / 右打席側面 / 左打席側面)
                     HStack(spacing: 6) {
                         Button(action: {
@@ -308,7 +633,17 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = true
             camera.setRotation(angle: rotationAngle)
             camera.setup240fpsCamera()
+            camera.setPowerMode(cameraPowerMode)
+            if shutterSpeedDenominator > 0 {
+                camera.setShutterSpeed(denominator: shutterSpeedDenominator)
+            }
+            if chirpDetectionEnabled {
+                chirpDetector.startDetection()
+            }
             restartListening()
+        }
+        .onDisappear {
+            chirpDetector.stopDetection()
         }
     }
 
@@ -350,7 +685,68 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     @Published var isAutoCountingDown = false
     @Published var remainingSeconds = 0
     @Published var currentZoomFactor: CGFloat = 1.0
+    @Published var currentShutterDenominator: Double = 0
+    @Published var currentISO: Float = 0
     @Published var statusMessage = "待機中 (240fps スタンバイ)"
+    
+    // カメラ電源ライフサイクル管理
+    @Published var isCameraRunning = false
+    @Published var isKioskReadyOrRecording = false
+    @Published var kioskScreenState = "standby"
+    private var powerMode: String = "auto" // "auto", "manual_on", "manual_off"
+
+    func setPowerMode(_ mode: String) {
+        self.powerMode = mode
+        applyCameraPowerState()
+    }
+
+    func applyCameraPowerState() {
+        switch powerMode {
+        case "manual_on":
+            startCameraSessionIfNeeded()
+        case "manual_off":
+            if !isRecording {
+                stopCameraSessionIfNeeded()
+            }
+        default: // "auto" (キオスクがreadyまたはrecording中ならカメラON、それ以外はOFF)
+            if isKioskReadyOrRecording || isRecording {
+                startCameraSessionIfNeeded()
+            } else {
+                stopCameraSessionIfNeeded()
+            }
+        }
+    }
+
+    func startCameraSessionIfNeeded() {
+        guard !session.isRunning else {
+            DispatchQueue.main.async { self.isCameraRunning = true }
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            self.session.startRunning()
+            DispatchQueue.main.async {
+                self.isCameraRunning = self.session.isRunning
+                self.updateMovieOrientation()
+                print("[CameraPower] ✅ カメラセッション起動 (ON)")
+            }
+        }
+    }
+
+    func stopCameraSessionIfNeeded() {
+        guard session.isRunning else {
+            DispatchQueue.main.async { self.isCameraRunning = false }
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            self.session.stopRunning()
+            DispatchQueue.main.async {
+                self.isCameraRunning = false
+                print("[CameraPower] 💤 カメラセッション停止 (OFF / 省電力モード)")
+            }
+        }
+    }
 
     func setRotation(angle: Int) {
         currentRotationAngle = angle
@@ -419,7 +815,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         
         session.commitConfiguration()
         updateMovieOrientation()
-        DispatchQueue.global(qos: .userInitiated).async { self.session.startRunning() }
+        applyCameraPowerState()
     }
     
     // ─────────────────────────────────────────────
@@ -438,6 +834,55 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             }
         } catch {
             print("Zoom error:", error)
+        }
+    }
+    
+    // ─────────────────────────────────────────────
+    // シャッタースピード設定 (1/1000〜1/2000秒 マニュアル固定 & オート)
+    // ─────────────────────────────────────────────
+    func setShutterSpeed(denominator: Double) {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { return }
+        do {
+            try device.lockForConfiguration()
+            if denominator <= 0 {
+                // オート露出へ復帰
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                DispatchQueue.main.async {
+                    self.currentShutterDenominator = 0
+                }
+                print("[Camera] Exposure mode restored to continuousAutoExposure")
+            } else {
+                // マニュアル固定 (1/1000 〜 1/2000秒)
+                let clampedDenom = max(500.0, min(denominator, 4000.0))
+                let targetDuration = CMTime(value: 1, timescale: Int32(clampedDenom))
+                let minDuration = device.activeFormat.minExposureDuration
+                let maxDuration = device.activeFormat.maxExposureDuration
+                let safeDuration = max(minDuration, min(targetDuration, maxDuration))
+                
+                let minISO = device.activeFormat.minISO
+                let maxISO = device.activeFormat.maxISO
+                // 高速シャッター時は受光量が激減するため、ISO感度を適切な範囲で確保
+                let current = device.iso
+                let targetISO = min(maxISO, max(minISO, max(current, 400.0)))
+                
+                if device.isExposureModeSupported(.custom) {
+                    device.setExposureModeCustom(duration: safeDuration, iso: targetISO) { [weak self] _ in
+                        guard let self = self else { return }
+                        DispatchQueue.main.async {
+                            self.currentISO = targetISO
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        self.currentShutterDenominator = clampedDenom
+                    }
+                    print("[Camera] Custom shutter set: 1/\(Int(clampedDenom))s, ISO: \(targetISO)")
+                }
+            }
+            device.unlockForConfiguration()
+        } catch {
+            print("Shutter speed configuration error:", error)
         }
     }
     
@@ -494,7 +939,26 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                 }
                 
                 DispatchQueue.main.async {
-                    if action == "START" {
+                    // キオスク画面状態およびカメラ要求フラグの更新
+                    if let req = json["camera_required"] as? Bool {
+                        self.isKioskReadyOrRecording = req
+                        self.applyCameraPowerState()
+                    }
+                    if let kScreen = json["kiosk_screen"] as? String {
+                        self.kioskScreenState = kScreen
+                    }
+
+                    if action == "CAMERA_ON" {
+                        self.isKioskReadyOrRecording = true
+                        self.applyCameraPowerState()
+                    } else if action == "CAMERA_OFF" {
+                        if !self.isRecording {
+                            self.isKioskReadyOrRecording = false
+                            self.applyCameraPowerState()
+                        }
+                    } else if action == "START" {
+                        self.isKioskReadyOrRecording = true
+                        self.startCameraSessionIfNeeded()
                         if !self.isRecording {
                             self.startRecording(
                                 autoDuration: duration,
@@ -511,6 +975,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                                 cameraRole: self.currentCameraRole
                             )
                         }
+                    } else if action == "MEASURE_TILT" {
+                        self.measureAndSendTilt()
                     }
                 }
             }
@@ -632,6 +1098,9 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                     self.statusMessage = "❌ 送信失敗: HTTP \(code) (\(cleanIP))"
                 }
                 
+                // 送信完了後、キオスクがreadyでなければ自動省電力停止
+                self.applyCameraPowerState()
+                
                 // 送信完了後、再びPC待機ループに戻る
                 self.pollNextCommand()
             }
@@ -643,8 +1112,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     // 毎秒2コマ (2fps) リアルタイムプレビュー配信
     // ─────────────────────────────────────────────
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // 録画中・アップロード中・停止中はプレビュー配信をスキップしてリソース保護
-        guard !isRecording, !isUploading, isListening, !isSendingPreview else { return }
+        // 録画中・アップロード中・カメラ非動作中はプレビュー配信をスキップしてリソース保護
+        guard isCameraRunning, !isRecording, !isUploading, isListening, !isSendingPreview else { return }
         
         let now = Date().timeIntervalSince1970
         guard now - lastPreviewSentTime >= 0.5 else { return } // 0.5秒おき (毎秒2コマ)
@@ -692,6 +1161,64 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         }.resume()
     }
     
+    // ─────────────────────────────────────────────
+    // PC指示による傾き計測＆送信 (オンデマンド・ワンショット実行)
+    // ─────────────────────────────────────────────
+    private let motionManager = CMMotionManager()
+
+    func measureAndSendTilt() {
+        guard motionManager.isDeviceMotionAvailable else {
+            print("[MotionTilt] ⚠️ ジャイロ・加速度センサーが利用不可です")
+            return
+        }
+        
+        // PCから指示された瞬間のみ起動 (0.05秒間だけ計測して即座に終了・負荷ゼロ)
+        motionManager.deviceMotionUpdateInterval = 0.05
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+            guard let self = self, let motion = motion else { return }
+            
+            // 1回計測したら直ちに停止してCPU/バッテリー負荷を完全ゼロ化
+            self.motionManager.stopDeviceMotionUpdates()
+            
+            let gz = motion.gravity.z
+            let gx = motion.gravity.x
+            // 横向き（Landscape）設置時の上下の傾き (Pitch角)
+            // gravity.z: 水平時 0.0, 見上げ時 -1.0, 見下げ時 +1.0
+            let pitch = asin(max(-1.0, min(1.0, -gz))) * (180.0 / .pi)
+            let roll = gx * (180.0 / .pi)
+            
+            print(String(format: "[MotionTilt] 📐 PC指示により傾き計測完了: カメラ=%@, Pitch=%+.2f°, Roll=%+.2f°", self.currentCameraRole, pitch, roll))
+            self.sendTiltDataToPC(pitch: pitch, roll: roll)
+        }
+    }
+    
+    private func sendTiltDataToPC(pitch: Double, roll: Double) {
+        let cleanIP = sanitizeIP(currentControllerIP)
+        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/camera_tilt") else { return }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 3.0
+        
+        let payload: [String: Any] = [
+            "camera": currentCameraRole,
+            "pitch": pitch,
+            "roll": roll,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error = error {
+                print("[MotionTilt] ❌ PCへの傾き送信失敗:", error.localizedDescription)
+            } else {
+                print("[MotionTilt] ✅ PCへ傾きデータを正常送信完了")
+            }
+        }.resume()
+    }
+    
     private func sanitizeIP(_ ip: String) -> String {
         return ip.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "http://", with: "")
@@ -716,3 +1243,213 @@ struct CameraPreview: UIViewRepresentable {
     }
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
+
+// ─────────────────────────────────────────────
+// チャープ音（5kHz -> 12kHz, 70ms）高精度・超低負荷 リアルタイム検出エンジン
+// ─────────────────────────────────────────────
+class ChirpAudioDetector: ObservableObject {
+    @Published var isRunning: Bool = false
+    @Published var chirpCount: Int = 0
+    @Published var isRecentlyDetected: Bool = false
+    @Published var statusText: String = "マイク停止中"
+    
+    private let audioEngine = AVAudioEngine()
+    private let processingQueue = DispatchQueue(label: "com.amsp.chirpProcessing", qos: .userInitiated)
+    
+    // チャープ波形パラメータ (5kHz -> 12kHz / 70ms)
+    private let fStart: Double = 5000.0
+    private let fEnd: Double = 12000.0
+    private let chirpDuration: Double = 0.070 // 70ms
+    
+    // サンプルレート別 参照チャープ波形
+    private var referenceChirp: [Float] = []
+    private var referenceNorm: Float = 1.0
+    private var configuredSampleRate: Double = 0.0
+    
+    // バッファ境界またぎ対策のオーバーラップ保持
+    private var overlapBuffer: [Float] = []
+    
+    // デバウンス用 (多重カウント防止)
+    private var lastDetectionTimestamp: TimeInterval = 0
+    private let debounceInterval: TimeInterval = 0.35 // 350ms
+    private var bannerHideWorkItem: DispatchWorkItem?
+    
+    init() {
+        // デフォルト44100Hzで事前初期化
+        updateReferenceChirp(sampleRate: 44100.0)
+    }
+    
+    private func updateReferenceChirp(sampleRate: Double) {
+        guard sampleRate > 0, sampleRate != configuredSampleRate else { return }
+        configuredSampleRate = sampleRate
+        
+        let nSamples = Int(sampleRate * chirpDuration)
+        referenceChirp = [Float](repeating: 0, count: nSamples)
+        let k = (fEnd - fStart) / chirpDuration
+        
+        var sumSq: Float = 0.0
+        for i in 0..<nSamples {
+            let t = Double(i) / sampleRate
+            let phase = 2.0 * .pi * (fStart * t + 0.5 * k * t * t)
+            // Tukey窓（端部2msのみフェード）
+            let fadeSamples = max(1, Int(sampleRate * 0.003))
+            var w: Double = 1.0
+            if i < fadeSamples {
+                w = 0.5 * (1.0 - cos(.pi * Double(i) / Double(fadeSamples)))
+            } else if i >= nSamples - fadeSamples {
+                w = 0.5 * (1.0 - cos(.pi * Double(nSamples - 1 - i) / Double(fadeSamples)))
+            }
+            let val = Float(w * sin(phase))
+            referenceChirp[i] = val
+            sumSq += val * val
+        }
+        referenceNorm = max(1e-6, sqrt(sumSq))
+    }
+    
+    func startDetection() {
+        guard !isRunning else { return }
+        
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                if !granted {
+                    self.statusText = "❌ マイク権限が拒否されています"
+                    print("[ChirpDetector] ⚠️ マイク権限が拒否されています")
+                    return
+                }
+                self.startAudioEngine()
+            }
+        }
+    }
+    
+    private func startAudioEngine() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
+            try session.setActive(true)
+            
+            let inputNode = audioEngine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            let sampleRate = inputFormat.sampleRate > 0 ? inputFormat.sampleRate : 44100.0
+            
+            updateReferenceChirp(sampleRate: sampleRate)
+            overlapBuffer.removeAll()
+            
+            // オンになった瞬間にカウントをリセットして監視開始
+            chirpCount = 0
+            isRecentlyDetected = false
+            
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, time in
+                guard let self = self else { return }
+                self.processAudioBuffer(buffer: buffer)
+            }
+            
+            try audioEngine.start()
+            isRunning = true
+            statusText = "🔊 マイク監視中 (5kHz-12kHz 待機)"
+            print("[ChirpDetector] ✅ マイク監視開始 (SR: \(sampleRate)Hz)")
+        } catch {
+            statusText = "❌ マイク起動エラー: \(error.localizedDescription)"
+            isRunning = false
+            print("[ChirpDetector] Audio engine start error:", error)
+        }
+    }
+    
+    func stopDetection() {
+        guard isRunning else { return }
+        
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        
+        isRunning = false
+        statusText = "🔇 マイク停止 (検出総数: \(chirpCount)回)"
+        print("[ChirpDetector] ⏹ マイク停止 (オフ時検出数: \(chirpCount)回)")
+    }
+    
+    func resetCount() {
+        chirpCount = 0
+        isRecentlyDetected = false
+    }
+    
+    private func processAudioBuffer(buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData?[0] else { return }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return }
+        
+        let newSamples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
+        
+        processingQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // 直前のオーバーラップデータと結合
+            let fullData = self.overlapBuffer + newSamples
+            let refLen = self.referenceChirp.count
+            guard fullData.count >= refLen else {
+                self.overlapBuffer = fullData
+                return
+            }
+            
+            // スライディング正規化相互相関 (NCC)
+            // 高速化のためステップ幅 16 サンプルで走査
+            let step = 16
+            let maxIndex = fullData.count - refLen
+            var maxCorrelation: Float = 0.0
+            
+            let ref = self.referenceChirp
+            let refNorm = self.referenceNorm
+            
+            for i in stride(from: 0, through: maxIndex, by: step) {
+                var dotProd: Float = 0.0
+                fullData.withUnsafeBufferPointer { fullPtr in
+                    guard let basePtr = fullPtr.baseAddress else { return }
+                    vDSP_dotpr(basePtr + i, 1, ref, 1, &dotProd, vDSP_Length(refLen))
+                }
+                
+                // シグナル局所エネルギーの算出
+                var sigEnergySq: Float = 0.0
+                fullData.withUnsafeBufferPointer { fullPtr in
+                    guard let basePtr = fullPtr.baseAddress else { return }
+                    vDSP_svesq(basePtr + i, 1, &sigEnergySq, vDSP_Length(refLen))
+                }
+                
+                let sigNorm = sqrt(sigEnergySq)
+                if sigNorm > 1e-4 {
+                    let ncc = dotProd / (sigNorm * refNorm)
+                    if ncc > maxCorrelation {
+                        maxCorrelation = ncc
+                    }
+                }
+            }
+            
+            // 次回用に最後の (refLen - 1) サンプルをオーバーラップとして保持
+            let keepCount = min(refLen - 1, fullData.count)
+            self.overlapBuffer = Array(fullData.suffix(keepCount))
+            
+            // しきい値判定 (NCC >= 0.40 で検出)
+            let now = Date().timeIntervalSince1970
+            if maxCorrelation >= 0.40 {
+                if now - self.lastDetectionTimestamp > self.debounceInterval {
+                    self.lastDetectionTimestamp = now
+                    print(String(format: "[ChirpDetector] ⚡⚡⚡ CHIRP DETECTED! NCC=%.3f at %@", maxCorrelation, Date().description))
+                    
+                    DispatchQueue.main.async {
+                        self.chirpCount += 1
+                        self.isRecentlyDetected = true
+                        
+                        // 1.5秒後にバナーを自動非表示
+                        self.bannerHideWorkItem?.cancel()
+                        let item = DispatchWorkItem { [weak self] in
+                            self?.isRecentlyDetected = false
+                        }
+                        self.bannerHideWorkItem = item
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
