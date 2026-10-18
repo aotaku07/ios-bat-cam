@@ -17,6 +17,7 @@ struct ContentView: View {
     @AppStorage("shutterSpeedDenominator") private var shutterSpeedDenominator: Double = 0 // 0 = Auto, 1000...2000 = Manual (1/x sec)
     @AppStorage("aspectRatioMode") private var aspectRatioMode: String = "16:9" // "16:9", "16:8", "2.35:1"
     @AppStorage("chirpDetectionEnabled") private var chirpDetectionEnabled: Bool = false
+    @AppStorage("chirpThreshold") private var chirpThreshold: Double = 0.18 // デフォルト0.35から0.18へ引き下げ（遠距離・騒音対応）
     @AppStorage("cameraPowerMode") private var cameraPowerMode: String = "auto" // "auto", "manual_on", "manual_off"
     
     @State private var showSettings: Bool = false
@@ -140,7 +141,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.6")
+                        Text("v2.7")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -183,42 +184,57 @@ struct ContentView: View {
                 // ─────────────────────────────────────────────
                 // チャープ音検出コントロールバー (ON/OFF & 検出回数表示)
                 // ─────────────────────────────────────────────
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     // ON/OFF 切り替えボタン
                     Button(action: {
                         chirpDetectionEnabled.toggle()
+                        chirpDetector.detectionThreshold = Float(chirpThreshold)
                         if chirpDetectionEnabled {
                             chirpDetector.startDetection()
                         } else {
                             chirpDetector.stopDetection()
                         }
                     }) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: chirpDetectionEnabled ? "mic.fill" : "mic.slash.fill")
-                                .font(.system(size: 13, weight: .bold))
-                            Text(chirpDetectionEnabled ? "🔊 チャープ検出: ON" : "🔇 チャープ検出: OFF")
-                                .font(.system(size: 12, weight: .heavy))
+                                .font(.system(size: 12, weight: .bold))
+                            Text(chirpDetectionEnabled ? "🔊 ON" : "🔇 OFF")
+                                .font(.system(size: 11, weight: .heavy))
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
                         .background(chirpDetectionEnabled ? Color.green : Color.gray.opacity(0.5))
                         .foregroundColor(chirpDetectionEnabled ? .black : .white)
-                        .cornerRadius(8)
+                        .cornerRadius(7)
                     }
 
                     // 検出回数バッジ (オン〜オフまでの累計回数)
-                    HStack(spacing: 5) {
-                        Text("検出回数:")
-                            .font(.system(size: 11, weight: .bold))
+                    HStack(spacing: 4) {
+                        Text("検出:")
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.white.opacity(0.8))
-                        Text("\(chirpDetector.chirpCount) 回")
-                            .font(.system(size: 15, weight: .black))
+                        Text("\(chirpDetector.chirpCount)回")
+                            .font(.system(size: 13, weight: .black))
                             .foregroundColor(chirpDetector.chirpCount > 0 ? .yellow : .white)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .background(Color.black.opacity(0.6))
-                    .cornerRadius(8)
+                    .cornerRadius(7)
+
+                    // ★ ピークスコア & 閾値表示（現場での音圧確認用）
+                    HStack(spacing: 3) {
+                        Text("閾値:\(String(format: "%.2f", chirpThreshold))")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.cyan)
+                        Text("(Peak:\(String(format: "%.2f", chirpDetector.lastPeakCorrelation)))")
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundColor(chirpDetector.lastPeakCorrelation >= Float(chirpThreshold) ? .yellow : .gray)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.6))
+                    .cornerRadius(7)
 
                     // カウントクリアボタン
                     if chirpDetector.chirpCount > 0 {
@@ -226,9 +242,9 @@ struct ContentView: View {
                             chirpDetector.resetCount()
                         }) {
                             Image(systemName: "arrow.counterclockwise")
-                                .font(.system(size: 11, weight: .bold))
+                                .font(.system(size: 10, weight: .bold))
                                 .foregroundColor(.white.opacity(0.8))
-                                .padding(6)
+                                .padding(5)
                                 .background(Color.white.opacity(0.2))
                                 .clipShape(Circle())
                         }
@@ -236,8 +252,8 @@ struct ContentView: View {
 
                     Spacer()
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
                 .background(Color.black.opacity(0.80))
                 .cornerRadius(10)
                 .frame(maxWidth: 600)
@@ -253,7 +269,7 @@ struct ContentView: View {
                             .foregroundColor(.yellow)
                             .font(.system(size: 26))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("⚡ チャープ同期音 (5kHz-12kHz) を検出！")
+                            Text("⚡ チャープ同期音 (2kHz-5kHz) を検出！ (スコア: \(String(format: "%.2f", chirpDetector.lastPeakCorrelation)))")
                                 .font(.system(size: 15, weight: .black))
                                 .foregroundColor(.yellow)
                             Text("今回セッション累計: \(chirpDetector.chirpCount) 回検出")
@@ -579,6 +595,28 @@ struct ContentView: View {
                                     .font(.caption)
                             }
 
+                            HStack(spacing: 6) {
+                                Text("チャープ感度:")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                                    .frame(width: 85, alignment: .leading)
+                                
+                                ForEach([0.15, 0.18, 0.22, 0.28, 0.35], id: \.self) { th in
+                                    Button(action: {
+                                        chirpThreshold = th
+                                        chirpDetector.detectionThreshold = Float(th)
+                                    }) {
+                                        Text(String(format: "%.2f", th))
+                                            .font(.system(size: 10, weight: .heavy))
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 3)
+                                            .background(abs(chirpThreshold - th) < 0.01 ? Color.yellow : Color.black.opacity(0.6))
+                                            .foregroundColor(abs(chirpThreshold - th) < 0.01 ? .black : .white)
+                                            .cornerRadius(5)
+                                    }
+                                }
+                            }
+
                             Toggle(isOn: $remoteEnabled) {
                                 Text("PC遠隔トリガーを受信 (常時スタンバイ)")
                                     .font(.caption)
@@ -637,6 +675,7 @@ struct ContentView: View {
             if shutterSpeedDenominator > 0 {
                 camera.setShutterSpeed(denominator: shutterSpeedDenominator)
             }
+            chirpDetector.detectionThreshold = Float(chirpThreshold)
             if chirpDetectionEnabled {
                 chirpDetector.startDetection()
             }
@@ -1252,6 +1291,8 @@ class ChirpAudioDetector: ObservableObject {
     @Published var chirpCount: Int = 0
     @Published var isRecentlyDetected: Bool = false
     @Published var statusText: String = "マイク停止中"
+    @Published var detectionThreshold: Float = 0.18 // 判定閾値（0.35から0.18へ引き下げ）
+    @Published var lastPeakCorrelation: Float = 0.0 // 直近のピークNCC相関値（視認用）
     
     private let audioEngine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "com.amsp.chirpProcessing", qos: .userInitiated)
@@ -1435,16 +1476,17 @@ class ChirpAudioDetector: ObservableObject {
             let keepCount = min(refLen - 1, fullData.count)
             self.overlapBuffer = Array(fullData.suffix(keepCount))
             
-            // しきい値判定 (直交NCC >= 0.35 で確実に検出)
+            // しきい値判定 (直交NCC >= detectionThreshold: 0.18 で遠距離・騒音下でも確実に検出)
             let now = Date().timeIntervalSince1970
-            if maxCorrelation >= 0.35 {
+            if maxCorrelation >= self.detectionThreshold {
                 if now - self.lastDetectionTimestamp > self.debounceInterval {
                     self.lastDetectionTimestamp = now
-                    print(String(format: "[ChirpDetector] ⚡⚡⚡ CHIRP DETECTED! NCC=%.3f at %@", maxCorrelation, Date().description))
+                    print(String(format: "[ChirpDetector] ⚡⚡⚡ CHIRP DETECTED! NCC=%.3f (Threshold=%.2f) at %@", maxCorrelation, self.detectionThreshold, Date().description))
                     
                     DispatchQueue.main.async {
                         self.chirpCount += 1
                         self.isRecentlyDetected = true
+                        self.lastPeakCorrelation = maxCorrelation
                         
                         // 1.5秒後にバナーを自動非表示
                         self.bannerHideWorkItem?.cancel()
@@ -1454,6 +1496,11 @@ class ChirpAudioDetector: ObservableObject {
                         self.bannerHideWorkItem = item
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
                     }
+                }
+            } else if maxCorrelation > 0.08 {
+                // しきい値未満でも微弱な相関があった場合に直近ピークを記録（感度調整・視認用）
+                DispatchQueue.main.async {
+                    self.lastPeakCorrelation = maxCorrelation
                 }
             }
         }
