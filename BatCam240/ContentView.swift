@@ -141,7 +141,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.10")
+                        Text("v2.11")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -969,7 +969,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         guard isListening else { return }
         
         let cleanIP = sanitizeIP(currentControllerIP)
-        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)") else {
+        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
+        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)&zoom=\(zoomStr)") else {
             DispatchQueue.main.async {
                 self.statusMessage = "❌ 指示PC IP無効: \(cleanIP)"
             }
@@ -1129,7 +1130,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             : currentAnalysisIP
         
         let cleanIP = sanitizeIP(targetRawIP)
-        guard let url = URL(string: "http://\(cleanIP):8080/api/analyze_video?camera=\(currentCameraRole)") else {
+        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
+        guard let url = URL(string: "http://\(cleanIP):8080/api/analyze_video?camera=\(currentCameraRole)&zoom=\(zoomStr)") else {
             statusMessage = "❌ 解析PC IP無効: \(cleanIP)"
             isUploading = false
             pollNextCommand()
@@ -1209,7 +1211,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     
     private func sendPreviewFrame(_ data: Data) {
         let cleanIP = sanitizeIP(currentControllerIP)
-        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)") else { return }
+        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
+        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)") else { return }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
