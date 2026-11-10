@@ -18,7 +18,7 @@ struct ContentView: View {
     @AppStorage("aspectRatioMode") private var aspectRatioMode: String = "16:9" // "16:9", "16:8", "2.35:1"
     @AppStorage("chirpDetectionEnabled") private var chirpDetectionEnabled: Bool = false
     @AppStorage("chirpThreshold") private var chirpThreshold: Double = 0.18 // デフォルト0.35から0.18へ引き下げ（遠距離・騒音対応）
-    @AppStorage("cameraPowerMode") private var cameraPowerMode: String = "auto" // "auto", "manual_on", "manual_off"
+    @AppStorage("cameraPowerMode_v28") private var cameraPowerMode: String = "manual_on" // デフォルトで常時ONにして起動直後からカメラ映像を確実に表示
     
     @State private var showSettings: Bool = false
     @State private var baseZoom: CGFloat = 1.0
@@ -34,21 +34,21 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // カメラプレビュー & ピンチズームジェスチャー (カメラ起動時のみ表示)
-            if camera.isCameraRunning {
-                CameraPreview(session: camera.session)
-                    .ignoresSafeArea()
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in
-                                let target = baseZoom * value
-                                camera.setZoom(factor: target)
-                            }
-                            .onEnded { _ in
-                                baseZoom = camera.currentZoomFactor
-                            }
-                    )
-            } else {
+            // カメラプレビュー & ピンチズームジェスチャー (常時裏で保持し、破棄・再生成による黒画面を防止)
+            CameraPreview(session: camera.session)
+                .ignoresSafeArea()
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let target = baseZoom * value
+                            camera.setZoom(factor: target)
+                        }
+                        .onEnded { _ in
+                            baseZoom = camera.currentZoomFactor
+                        }
+                )
+
+            if !camera.isCameraRunning {
                 // カメラ省電力スリープ表示（キオスクのready待機時）
                 ZStack {
                     Color.black.ignoresSafeArea()
@@ -60,7 +60,7 @@ struct ContentView: View {
                             .font(.system(size: 20, weight: .bold))
                             .foregroundColor(.white)
                         if cameraPowerMode == "auto" {
-                            Text("キオスクがプレビュー画面（Ready）に遷移すると\n自動でカメラが起動します")
+                            Text("キオスクがプレビュー画面（Ready）に遷移すると\n自動でカメラが起動します\n（すぐ映すには下の「🎥 常時ON」を押してください）")
                                 .font(.system(size: 13))
                                 .foregroundColor(.gray)
                                 .multilineTextAlignment(.center)
@@ -141,7 +141,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.7")
+                        Text("v2.8")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -670,8 +670,8 @@ struct ContentView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             camera.setRotation(angle: rotationAngle)
-            camera.setup240fpsCamera()
             camera.setPowerMode(cameraPowerMode)
+            camera.setup240fpsCamera()
             if shutterSpeedDenominator > 0 {
                 camera.setShutterSpeed(denominator: shutterSpeedDenominator)
             }
@@ -728,11 +728,14 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     @Published var currentISO: Float = 0
     @Published var statusMessage = "待機中 (240fps スタンバイ)"
     
+    private let sessionQueue = DispatchQueue(label: "com.amsp.sessionQueue", qos: .userInitiated)
+    private var isSessionConfigured: Bool = false
+
     // カメラ電源ライフサイクル管理
-    @Published var isCameraRunning = false
+    @Published var isCameraRunning = true
     @Published var isKioskReadyOrRecording = false
     @Published var kioskScreenState = "standby"
-    private var powerMode: String = "auto" // "auto", "manual_on", "manual_off"
+    private var powerMode: String = "manual_on" // "auto", "manual_on", "manual_off"
 
     func setPowerMode(_ mode: String) {
         self.powerMode = mode
@@ -757,29 +760,26 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
 
     func startCameraSessionIfNeeded() {
-        guard !session.isRunning else {
-            DispatchQueue.main.async { self.isCameraRunning = true }
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        sessionQueue.async { [weak self] in
             guard let self = self else { return }
-            self.session.startRunning()
+            guard self.isSessionConfigured else { return }
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
             DispatchQueue.main.async {
                 self.isCameraRunning = self.session.isRunning
                 self.updateMovieOrientation()
-                print("[CameraPower] ✅ カメラセッション起動 (ON)")
+                print("[CameraPower] ✅ カメラセッション起動 (ON: \(self.session.isRunning))")
             }
         }
     }
 
     func stopCameraSessionIfNeeded() {
-        guard session.isRunning else {
-            DispatchQueue.main.async { self.isCameraRunning = false }
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        sessionQueue.async { [weak self] in
             guard let self = self else { return }
-            self.session.stopRunning()
+            if self.session.isRunning {
+                self.session.stopRunning()
+            }
             DispatchQueue.main.async {
                 self.isCameraRunning = false
                 print("[CameraPower] 💤 カメラセッション停止 (OFF / 省電力モード)")
@@ -805,56 +805,79 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     func setup240fpsCamera() {
-        session.beginConfiguration()
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let input = try? AVCaptureDeviceInput(device: device) else {
-            statusMessage = "カメラ初期化エラー"
-            return
-        }
-        
-        if session.canAddInput(input) { session.addInput(input) }
-        if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
-        if session.canAddOutput(videoDataOutput) {
-            videoDataOutput.alwaysDiscardsLateVideoFrames = true
-            videoDataOutput.setSampleBufferDelegate(self, queue: previewQueue)
-            session.addOutput(videoDataOutput)
-        }
-        
-        var targetFPS: Int = 30
-        var bestFormat: AVCaptureDevice.Format?
-        
-        for desiredFPS in [240, 120, 60] {
-            for format in device.formats {
-                for range in format.videoSupportedFrameRateRanges {
-                    if range.maxFrameRate >= Double(desiredFPS) {
-                        bestFormat = format
-                        targetFPS = desiredFPS
-                        break
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard let self = self else { return }
+            guard granted else {
+                DispatchQueue.main.async {
+                    self.statusMessage = "❌ カメラ権限が拒否されています (設定で許可してください)"
+                    self.isCameraRunning = false
+                }
+                return
+            }
+            self.sessionQueue.async {
+                if !self.isSessionConfigured {
+                    self.session.beginConfiguration()
+                    self.session.sessionPreset = .high
+                    guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                          let input = try? AVCaptureDeviceInput(device: device) else {
+                        self.session.commitConfiguration()
+                        DispatchQueue.main.async {
+                            self.statusMessage = "カメラ初期化エラー"
+                        }
+                        return
+                    }
+                    
+                    if self.session.canAddInput(input) { self.session.addInput(input) }
+                    if self.session.canAddOutput(self.movieOutput) { self.session.addOutput(self.movieOutput) }
+                    if self.session.canAddOutput(self.videoDataOutput) {
+                        self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
+                        self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
+                        self.session.addOutput(self.videoDataOutput)
+                    }
+                    
+                    var targetFPS: Int = 30
+                    var bestFormat: AVCaptureDevice.Format?
+                    
+                    for desiredFPS in [240, 120, 60] {
+                        for format in device.formats {
+                            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                            guard dims.width >= 1280 && dims.width <= 1920 else { continue }
+                            for range in format.videoSupportedFrameRateRanges {
+                                if range.maxFrameRate >= Double(desiredFPS) {
+                                    bestFormat = format
+                                    targetFPS = desiredFPS
+                                    break
+                                }
+                            }
+                            if bestFormat != nil { break }
+                        }
+                        if bestFormat != nil { break }
+                    }
+                    
+                    var msg = "✅ 標準カメラで起動 (PC待機中)"
+                    if let format = bestFormat {
+                        do {
+                            try device.lockForConfiguration()
+                            device.activeFormat = format
+                            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
+                            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
+                            device.unlockForConfiguration()
+                            msg = "✅ \(targetFPS)fps ロック成功 (PC待機中)"
+                        } catch {
+                            msg = "FPS設定失敗 (通常モード)"
+                        }
+                    }
+                    
+                    self.session.commitConfiguration()
+                    self.isSessionConfigured = true
+                    DispatchQueue.main.async {
+                        self.statusMessage = msg
+                        self.updateMovieOrientation()
                     }
                 }
-                if bestFormat != nil { break }
+                self.applyCameraPowerState()
             }
-            if bestFormat != nil { break }
         }
-        
-        if let format = bestFormat {
-            do {
-                try device.lockForConfiguration()
-                device.activeFormat = format
-                device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
-                device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
-                device.unlockForConfiguration()
-                statusMessage = "✅ \(targetFPS)fps ロック成功 (PC待機中)"
-            } catch {
-                statusMessage = "FPS設定失敗 (通常モード)"
-            }
-        } else {
-            statusMessage = "✅ 標準カメラで起動 (PC待機中)"
-        }
-        
-        session.commitConfiguration()
-        updateMovieOrientation()
-        applyCameraPowerState()
     }
     
     // ─────────────────────────────────────────────
@@ -1268,19 +1291,34 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
 }
 
 // ─────────────────────────────────────────────
-// カメラプレビュー
+// カメラプレビュー (AVCaptureVideoPreviewLayer を layerClass として保持し 0x0 フレーム問題を完全解消)
 // ─────────────────────────────────────────────
+class PreviewUIView: UIView {
+    override class var layerClass: AnyClass {
+        return AVCaptureVideoPreviewLayer.self
+    }
+    var videoPreviewLayer: AVCaptureVideoPreviewLayer {
+        return layer as! AVCaptureVideoPreviewLayer
+    }
+}
+
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(layer)
-        DispatchQueue.main.async { layer.frame = view.bounds }
+    func makeUIView(context: Context) -> PreviewUIView {
+        let view = PreviewUIView()
+        view.backgroundColor = .black
+        view.videoPreviewLayer.session = session
+        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        if let conn = view.videoPreviewLayer.connection, conn.isVideoOrientationSupported {
+            conn.videoOrientation = .portrait
+        }
         return view
     }
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: PreviewUIView, context: Context) {
+        if uiView.videoPreviewLayer.session !== session {
+            uiView.videoPreviewLayer.session = session
+        }
+    }
 }
 
 // ─────────────────────────────────────────────
