@@ -141,7 +141,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.9")
+                        Text("v2.10")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
