@@ -3,6 +3,7 @@ import AVFoundation
 import UIKit
 import CoreMotion
 import Accelerate
+import AudioToolbox
 
 struct ContentView: View {
     @StateObject private var camera = Camera240Manager()
@@ -141,7 +142,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.8")
+                        Text("v2.9")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -570,6 +571,23 @@ struct ContentView: View {
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
                         }
+                    }
+
+                    // バッターボックス床傾斜 計測ボタン (画面下向き・上端を投手向きでカメラ突起誤差を回避)
+                    Button(action: {
+                        camera.scheduleFloorSlopeMeasurement(delaySeconds: 3.0)
+                    }) {
+                        Text("📐 床傾斜を計測 (3秒後に画面下向き・上端→投手)")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.28))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.orange, lineWidth: 1)
+                            )
+                            .foregroundColor(Color.yellow)
+                            .cornerRadius(8)
                     }
 
                     // 設定詳細アコーディオン
@@ -1039,6 +1057,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         }
                     } else if action == "MEASURE_TILT" {
                         self.measureAndSendTilt()
+                    } else if action == "MEASURE_FLOOR_SLOPE" {
+                        self.measureAndSendFloorSlope()
                     }
                 }
             }
@@ -1277,6 +1297,83 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                 print("[MotionTilt] ❌ PCへの傾き送信失敗:", error.localizedDescription)
             } else {
                 print("[MotionTilt] ✅ PCへ傾きデータを正常送信完了")
+            }
+        }.resume()
+    }
+
+    // ─────────────────────────────────────────────
+    // バッターボックス床傾斜 計測＆送信 (/api/floor_slope)
+    // カメラ突起の影響を避けるため「画面を下向き」・上端(+Y)を投手方向(+Z)に向けて床置き
+    // ─────────────────────────────────────────────
+    func scheduleFloorSlopeMeasurement(delaySeconds: Double = 3.0) {
+        DispatchQueue.main.async {
+            self.statusMessage = String(format: "📐 画面を下向き(上端→投手)で床へ... %.0f秒後に計測", delaySeconds)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+            self?.measureAndSendFloorSlope()
+        }
+    }
+
+    func measureAndSendFloorSlope() {
+        guard motionManager.isDeviceMotionAvailable else {
+            DispatchQueue.main.async {
+                self.statusMessage = "❌ ジャイロ・加速度センサーが利用不可"
+            }
+            return
+        }
+        DispatchQueue.main.async {
+            self.statusMessage = "📐 バッターボックス床傾斜を計測中..."
+        }
+        var sumX = 0.0, sumY = 0.0, sumZ = 0.0
+        var count = 0
+        let targetSamples = 12
+        motionManager.deviceMotionUpdateInterval = 0.02
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+            guard let self = self, let motion = motion else { return }
+            sumX += motion.gravity.x
+            sumY += motion.gravity.y
+            sumZ += motion.gravity.z
+            count += 1
+            if count >= targetSamples {
+                self.motionManager.stopDeviceMotionUpdates()
+                let gx = sumX / Double(count)
+                let gy = sumY / Double(count)
+                let gz = sumZ / Double(count)
+                let norm = max(1e-3, sqrt(gx * gx + gy * gy + gz * gz))
+                // iOS CMDeviceMotion.gravity は下向き。画面下向き時は gz > 0、画面上向き時は gz < 0
+                let pitchDeg = asin(max(-1.0, min(1.0, -gy / norm))) * (180.0 / .pi)
+                let signX = (gz > 0.0) ? 1.0 : -1.0
+                let rollDeg = asin(max(-1.0, min(1.0, (signX * gx) / norm))) * (180.0 / .pi)
+                let dirLabel = (gz > 0.0) ? "画面下向き" : "画面上向き"
+                AudioServicesPlaySystemSound(1057)
+                self.statusMessage = String(format: "📐 床傾斜(%@): 投手%+.1f° 左右%+.1f°", dirLabel, pitchDeg, rollDeg)
+                self.sendFloorSlopeDataToPC(pitchDeg: pitchDeg, rollDeg: rollDeg)
+            }
+        }
+    }
+
+    private func sendFloorSlopeDataToPC(pitchDeg: Double, rollDeg: Double) {
+        let cleanIP = sanitizeIP(currentControllerIP)
+        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/floor_slope") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 3.0
+
+        let payload: [String: Any] = [
+            "camera": currentCameraRole,
+            "pitch_deg": pitchDeg,
+            "roll_deg": rollDeg,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        URLSession.shared.dataTask(with: request) { _, _, error in
+            if let error = error {
+                print("[FloorSlope] ❌ PCへの床傾斜送信失敗:", error.localizedDescription)
+            } else {
+                print("[FloorSlope] ✅ PCへ床傾斜データを正常送信完了")
             }
         }.resume()
     }
