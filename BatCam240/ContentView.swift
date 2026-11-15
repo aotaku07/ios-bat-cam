@@ -15,7 +15,7 @@ struct ContentView: View {
     @AppStorage("rotationAngle") private var rotationAngle: Int = 90 // デフォルト90度回転で左倒れ解消
     @AppStorage("remoteEnabled") private var remoteEnabled: Bool = true
     @AppStorage("shutterSpeedDenominator") private var shutterSpeedDenominator: Double = 0 // 0 = Auto, 1000...2000 = Manual (1/x sec)
-    @AppStorage("aspectRatioMode") private var aspectRatioMode: String = "16:9" // "16:9", "16:8", "2.35:1"
+    @AppStorage("aspectRatioMode") private var aspectRatioMode: String = "9:16" // "9:16", "16:9", "4:3", "1:1"
     @AppStorage("chirpDetectionEnabled") private var chirpDetectionEnabled: Bool = false
     @AppStorage("chirpThreshold") private var chirpThreshold: Double = 0.18 // デフォルト0.35から0.18へ引き下げ（遠距離・騒音対応）
     @AppStorage("cameraPowerMode_v28") private var cameraPowerMode: String = "manual_on" // デフォルトで常時ONにして起動直後からカメラ映像を確実に表示
@@ -82,22 +82,39 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            // 撮影画角・比率調整マスク (上下余計なスペースを遮蔽し左右両打席に集中)
-            if aspectRatioMode != "16:9" {
+            // 撮影画角・比率調整マスク (9:16縦長 / 16:9横長 / 4:3 / 1:1)
+            if aspectRatioMode != "9:16" {
                 GeometryReader { geo in
-                    let maskH = (aspectRatioMode == "2.35:1") ? geo.size.height * 0.16 : geo.size.height * 0.08
+                    let screenW = geo.size.width
+                    let screenH = geo.size.height
+                    // 縦持ち時の中央クロップマスク高さを計算
+                    let targetRatioH: CGFloat = {
+                        if aspectRatioMode == "16:9" {
+                            // 16:9 横長スリット (幅 = screenW, 高さ = screenW * 9 / 16)
+                            return screenW * 9.0 / 16.0
+                        } else if aspectRatioMode == "4:3" {
+                            // 4:3 スリット (幅 = screenW, 高さ = screenW * 3 / 4)
+                            return screenW * 3.0 / 4.0
+                        } else if aspectRatioMode == "1:1" {
+                            // 1:1 正方形スリット (幅 = screenW, 高さ = screenW)
+                            return screenW
+                        }
+                        return screenH
+                    }()
+                    let maskH = max(0, (screenH - targetRatioH) / 2.0)
+
                     VStack(spacing: 0) {
                         ZStack(alignment: .bottom) {
-                            Color.black.opacity(0.60)
-                            Rectangle().fill(Color.yellow.opacity(0.85)).frame(height: 1.5)
+                            Color.black.opacity(0.65)
+                            Rectangle().fill(Color.yellow.opacity(0.9)).frame(height: 1.5)
                         }
                         .frame(height: maskH)
                         
                         Spacer()
                         
                         ZStack(alignment: .top) {
-                            Color.black.opacity(0.60)
-                            Rectangle().fill(Color.yellow.opacity(0.85)).frame(height: 1.5)
+                            Color.black.opacity(0.65)
+                            Rectangle().fill(Color.yellow.opacity(0.9)).frame(height: 1.5)
                         }
                         .frame(height: maskH)
                     }
@@ -140,8 +157,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ
-                        Text("v2.12")
+                        // バージョンバッジ (v2.13)
+                        Text("v2.13")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -348,19 +365,19 @@ struct ContentView: View {
                         }
                     }
 
-                    // 撮影画角・比率バー (16:9 / 16:8 / 2.35:1)
+                    // 撮影画角・比率バー (9:16縦型 / 16:9横型 / 4:3標準 / 1:1正方形)
                     HStack(spacing: 8) {
-                        Text("📐 比率:")
+                        Text("📐 縦横比:")
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                         
-                        ForEach(["16:9", "16:8", "2.35:1"], id: \.self) { ratio in
+                        ForEach(["9:16", "16:9", "4:3", "1:1"], id: \.self) { ratio in
                             Button(action: {
                                 aspectRatioMode = ratio
                             }) {
-                                Text(ratio == "16:9" ? "16:9 (フル)" : (ratio == "16:8" ? "16:8 (ワイド)" : "2.35:1 (シネマ)"))
+                                Text(ratio == "9:16" ? "9:16 (縦全身)" : (ratio == "16:9" ? "16:9 (横ワイド)" : (ratio == "4:3" ? "4:3" : "1:1")))
                                     .font(.system(size: 11, weight: .heavy))
-                                    .padding(.horizontal, 8)
+                                    .padding(.horizontal, 6)
                                     .padding(.vertical, 4)
                                     .background(aspectRatioMode == ratio ? Color.cyan : Color.black.opacity(0.6))
                                     .foregroundColor(aspectRatioMode == ratio ? Color.black : Color.white)
