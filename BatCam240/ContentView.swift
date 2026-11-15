@@ -141,7 +141,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ
-                        Text("v2.11")
+                        Text("v2.12")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1209,10 +1209,17 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         sendPreviewFrame(jpegData)
     }
     
+    private var latestPitch: Double? = nil
+    private var latestRoll: Double? = nil
+
     private func sendPreviewFrame(_ data: Data) {
         let cleanIP = sanitizeIP(currentControllerIP)
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)") else { return }
+        var urlStr = "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)"
+        if let p = latestPitch, let r = latestRoll {
+            urlStr += String(format: "&pitch=%.2f&roll=%.2f", p, r)
+        }
+        guard !cleanIP.isEmpty, let url = URL(string: urlStr) else { return }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1251,6 +1258,9 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             // gravity.z: 水平時 0.0, 見上げ時 -1.0, 見下げ時 +1.0
             let pitch = asin(max(-1.0, min(1.0, -gz))) * (180.0 / .pi)
             let roll = gx * (180.0 / .pi)
+            
+            self.latestPitch = pitch
+            self.latestRoll = roll
             
             print(String(format: "[MotionTilt] 📐 PC指示により傾き計測完了: カメラ=%@, Pitch=%+.2f°, Roll=%+.2f°", self.currentCameraRole, pitch, roll))
             self.sendTiltDataToPC(pitch: pitch, roll: roll)
