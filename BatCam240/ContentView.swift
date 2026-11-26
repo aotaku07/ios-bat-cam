@@ -161,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.17)
-                        Text("v2.17")
+                        // バージョンバッジ (v2.18)
+                        Text("v2.18")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1127,7 +1127,21 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("swing_240fps.mp4")
         try? FileManager.default.removeItem(at: tempURL)
-        movieOutput.startRecording(to: tempURL, recordingDelegate: self)
+        sessionQueue.async {
+            if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
+                self.session.beginConfiguration()
+                self.session.addOutput(self.movieOutput)
+                self.session.commitConfiguration()
+            }
+            if let conn = self.movieOutput.connection(with: .video) {
+                conn.isEnabled = true
+            }
+            self.updateMovieOrientation()
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
+            self.movieOutput.startRecording(to: tempURL, recordingDelegate: self)
+        }
         
         isRecording = true
         statusMessage = "🔴 240fps 録画中..."
@@ -1174,11 +1188,18 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
-        guard error == nil else {
-            statusMessage = "録画エラー"
-            isUploading = false
-            pollNextCommand()
-            return
+        if let err = error as NSError? {
+            let finishedOK = (err.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? false
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputFileURL.path)[.size] as? Int64) ?? 0
+            if !finishedOK && fileSize < 10000 {
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.isUploading = false
+                    self.statusMessage = "❌ 録画エラー: \(err.localizedDescription)"
+                    self.pollNextCommand()
+                }
+                return
+            }
         }
         uploadVideo(fileURL: outputFileURL)
     }
@@ -1350,6 +1371,9 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             if self.session.canSetSessionPreset(.high) {
                 self.session.sessionPreset = .high
             }
+            if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
+                self.session.addOutput(self.movieOutput)
+            }
             self.session.commitConfiguration()
             if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
                let fmt = self.saved240Format {
@@ -1361,6 +1385,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                     device.unlockForConfiguration()
                 } catch {}
             }
+            if let conn = self.movieOutput.connection(with: .video) {
+                conn.isEnabled = true
+            }
+            self.updateMovieOrientation()
             self.isCapturingCalibPhoto = false
         }
     }
