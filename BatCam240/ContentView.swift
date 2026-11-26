@@ -28,6 +28,10 @@ struct ContentView: View {
         case "cam_front": return "⚾ 正面カメラ (Front)"
         case "cam_side_right": return "📐 右打席用 側面 (Right)"
         case "cam_side_left": return "📐 左打席用 側面 (Left)"
+        case "cam_front_right": return "↗️ 右前カメラ (Front-Right)"
+        case "cam_back_right": return "↘️ 右後カメラ (Back-Right)"
+        case "cam_front_left": return "↖️ 左前カメラ (Front-Left)"
+        case "cam_back_left": return "↙️ 左後カメラ (Back-Left)"
         default: return "📐 側面カメラ"
         }
     }
@@ -157,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.13)
-                        Text("v2.13")
+                        // バージョンバッジ (v2.14)
+                        Text("v2.14")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -586,6 +590,29 @@ struct ContentView: View {
                                 .background(cameraRole == "cam_side_left" ? Color.blue : Color.white.opacity(0.15))
                                 .foregroundColor(.white)
                                 .cornerRadius(8)
+                        }
+                    }
+
+                    // 斜め配置 役割切り替え (右前 / 右後 / 左前 / 左後)
+                    HStack(spacing: 5) {
+                        ForEach([
+                            ("cam_front_right", "↗️ 右前"),
+                            ("cam_back_right", "↘️ 右後"),
+                            ("cam_front_left", "↖️ 左前"),
+                            ("cam_back_left", "↙️ 左後")
+                        ], id: \.0) { roleId, label in
+                            Button(action: {
+                                cameraRole = roleId
+                                restartListening()
+                            }) {
+                                Text(label)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(cameraRole == roleId ? Color.purple : Color.white.opacity(0.15))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(8)
+                            }
                         }
                     }
 
