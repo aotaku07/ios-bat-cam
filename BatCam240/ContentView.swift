@@ -161,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.14)
-                        Text("v2.14")
+                        // バージョンバッジ (v2.15)
+                        Text("v2.15")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1248,7 +1248,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         guard let cgImage = context.createCGImage(orientedImage, from: orientedImage.extent) else { return }
         
         let image = UIImage(cgImage: cgImage)
-        guard let jpegData = image.jpegData(compressionQuality: 0.45) else { return }
+        guard let jpegData = image.jpegData(compressionQuality: 0.85) else { return }
         
         sendPreviewFrame(jpegData)
     }
