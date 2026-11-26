@@ -8,9 +8,10 @@ struct ContentView: View {
     @StateObject private var camera = Camera240Manager()
     @StateObject private var chirpDetector = ChirpAudioDetector()
     
-    // 設定の永続化
-    @AppStorage("controllerIP") private var controllerIP: String = "192.168.0.112"
-    @AppStorage("analysisIP") private var analysisIP: String = ""
+    // 設定の永続化 (PC区別撤廃: 最大3台まで対等に登録可能)
+    @AppStorage("controllerIP") private var controllerIP: String = "192.168.0.112" // PC IP 1
+    @AppStorage("analysisIP") private var analysisIP: String = ""                  // PC IP 2
+    @AppStorage("thirdIP") private var thirdIP: String = ""                        // PC IP 3
     @AppStorage("cameraRole") private var cameraRole: String = "cam_side_right" // "cam_front", "cam_side_right", "cam_side_left"
     @AppStorage("rotationAngle") private var rotationAngle: Int = 90 // デフォルト90度回転で左倒れ解消
     @AppStorage("remoteEnabled") private var remoteEnabled: Bool = true
@@ -21,6 +22,7 @@ struct ContentView: View {
     @AppStorage("cameraPowerMode_v28") private var cameraPowerMode: String = "manual_on" // デフォルトで常時ONにして起動直後からカメラ映像を確実に表示
     
     @State private var showSettings: Bool = false
+    @State private var uiHidden: Bool = false
     @State private var baseZoom: CGFloat = 1.0
 
     private func roleDisplayName(_ role: String) -> String {
@@ -129,6 +131,7 @@ struct ContentView: View {
 
 
 
+            if !uiHidden {
             VStack {
                 // ─────────────────────────────────────────────
                 // 上部ステータスHUD (超特大で視認性抜群)
@@ -161,8 +164,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.19)
-                        Text("v2.19")
+                        // バージョンバッジ (v2.20)
+                        Text("v2.20")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -620,21 +623,31 @@ struct ContentView: View {
                     if showSettings {
                         VStack(spacing: 8) {
                             HStack {
-                                Text("指示PC IP:")
+                                Text("PC IP 1:")
                                     .font(.caption)
                                     .foregroundColor(.white)
-                                    .frame(width: 85, alignment: .leading)
-                                TextField("192.168.0.112", text: $controllerIP)
+                                    .frame(width: 72, alignment: .leading)
+                                TextField("例: 192.168.0.112", text: $controllerIP)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                                     .font(.caption)
                             }
 
                             HStack {
-                                Text("解析PC IP:")
+                                Text("PC IP 2:")
                                     .font(.caption)
                                     .foregroundColor(.white)
-                                    .frame(width: 85, alignment: .leading)
-                                TextField("空欄なら指示PCへ送信", text: $analysisIP)
+                                    .frame(width: 72, alignment: .leading)
+                                TextField("2台目PC (任意)", text: $analysisIP)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                    .font(.caption)
+                            }
+
+                            HStack {
+                                Text("PC IP 3:")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                                    .frame(width: 72, alignment: .leading)
+                                TextField("3台目PC (任意)", text: $thirdIP)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                                     .font(.caption)
                             }
@@ -710,6 +723,27 @@ struct ContentView: View {
                 .cornerRadius(14)
                 .padding(.bottom, 8)
             }
+            } // end if !uiHidden
+
+            // UI表示/非表示 切り替えフローティングボタン (右上常駐)
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: { uiHidden.toggle() }) {
+                        Text(uiHidden ? "👁 UI表示" : "👁 UI隠す")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.65))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cyan.opacity(0.7), lineWidth: 1))
+                            .cornerRadius(8)
+                    }
+                    .padding(.top, 4)
+                    .padding(.trailing, 8)
+                }
+                Spacer()
+            }
         }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
@@ -735,6 +769,7 @@ struct ContentView: View {
             camera.startListening(
                 controllerIP: controllerIP,
                 analysisIP: analysisIP,
+                thirdIP: thirdIP,
                 cameraRole: cameraRole
             )
         } else {
@@ -744,7 +779,7 @@ struct ContentView: View {
 }
 
 // ─────────────────────────────────────────────
-// 240fps カメラマネージャー & 遠隔同期 (毎秒2コマ プレビュー送信対応)
+// 240fps カメラマネージャー & 遠隔同期 (最大3台のPC対等連携)
 // ─────────────────────────────────────────────
 class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate {
     let session = AVCaptureSession()
@@ -761,10 +796,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     
     private var currentControllerIP: String = ""
     private var currentAnalysisIP: String = ""
+    private var currentThirdIP: String = ""
     private var currentCameraRole: String = "cam_side_right"
     
     private var isListening: Bool = false
-    private var listeningTask: URLSessionDataTask?
+    private var listeningTasks: [String: URLSessionDataTask] = [:]
     private var countdownTimer: Timer?
     
     @Published var isRecording = false
@@ -1001,40 +1037,70 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     // ─────────────────────────────────────────────
-    // PC遠隔トリガー待機 (Long Polling)
+    // PC遠隔トリガー待機 (Long Polling - 最大3台対等並列待受)
     // ─────────────────────────────────────────────
-    func startListening(controllerIP: String, analysisIP: String, cameraRole: String) {
+    private func registeredPCIPs() -> [String] {
+        var result: [String] = []
+        for raw in [currentControllerIP, currentAnalysisIP, currentThirdIP] {
+            let clean = sanitizeIP(raw)
+            if !clean.isEmpty && !result.contains(clean) {
+                result.append(clean)
+            }
+        }
+        return result
+    }
+
+    private func peerIpsQueryParam() -> String {
+        let ips = registeredPCIPs()
+        guard !ips.isEmpty else { return "" }
+        return "&peer_ips=" + ips.joined(separator: ",")
+    }
+
+    func startListening(controllerIP: String, analysisIP: String, thirdIP: String = "", cameraRole: String) {
+        stopListening()
         self.currentControllerIP = controllerIP
         self.currentAnalysisIP = analysisIP
+        self.currentThirdIP = thirdIP
         self.currentCameraRole = cameraRole
+        let targets = registeredPCIPs()
+        guard !targets.isEmpty else {
+            DispatchQueue.main.async {
+                self.statusMessage = "⚠️ PC IPを1つ以上登録してください"
+            }
+            return
+        }
         self.isListening = true
         pollNextCommand()
     }
     
     func stopListening() {
         self.isListening = false
-        listeningTask?.cancel()
-        listeningTask = nil
+        for (_, task) in listeningTasks {
+            task.cancel()
+        }
+        listeningTasks.removeAll()
     }
-    
+
     private func pollNextCommand() {
         guard isListening else { return }
+        for cleanIP in registeredPCIPs() {
+            pollNextCommand(for: cleanIP)
+        }
+    }
+    
+    private func pollNextCommand(for cleanIP: String) {
+        guard isListening else { return }
         
-        let cleanIP = sanitizeIP(currentControllerIP)
-        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
-        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)") else {
-            DispatchQueue.main.async {
-                self.statusMessage = "❌ 指示PC IP無効: \(cleanIP)"
-            }
+        let peerParam = peerIpsQueryParam()
+        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)&zoom=\(zoomStr)\(peerParam)") else {
             return
         }
         
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         
-        listeningTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self, self.isListening else { return }
             
             if let error = error as NSError?, error.code == NSURLErrorCancelled {
@@ -1106,12 +1172,14 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             
             // アップロード中以外の時は、すぐに次回のコマンド待ちを再開
             if !self.isUploading {
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
-                    self.pollNextCommand()
+                let delay: Double = (error != nil) ? 1.5 : 0.2
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                    self.pollNextCommand(for: cleanIP)
                 }
             }
         }
-        listeningTask?.resume()
+        listeningTasks[cleanIP] = task
+        task.resume()
     }
     
     // ─────────────────────────────────────────────
@@ -1222,14 +1290,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     // ─────────────────────────────────────────────
-    // 解析PC & 指示PC 両方へ動画アップロード
+    // 登録されている全PC (最大3台) へ動画アップロード
     // ─────────────────────────────────────────────
     private func uploadVideo(fileURL: URL) {
-        let cleanCtrl = sanitizeIP(currentControllerIP)
-        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
-        var targets: [String] = []
-        if !cleanAnalysis.isEmpty { targets.append(cleanAnalysis) }
-        if !cleanCtrl.isEmpty && !targets.contains(cleanCtrl) { targets.append(cleanCtrl) }
+        let targets = registeredPCIPs()
         guard !targets.isEmpty else {
             statusMessage = "❌ 送信先PC IP無効"
             isUploading = false
@@ -1238,7 +1302,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         }
         let isDual = (targets.count >= 2)
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
+        let peerParam = peerIpsQueryParam()
         let dualParam = isDual ? "&dual_sent=1" : ""
 
         let config = URLSessionConfiguration.default
@@ -1255,7 +1319,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         }
 
         for targetIP in targets {
-            guard let url = URL(string: "http://\(targetIP):8080/api/analyze_video?camera=\(currentCameraRole)&zoom=\(zoomStr)\(dualParam)\(analysisParam)") else {
+            guard let url = URL(string: "http://\(targetIP):8080/api/analyze_video?camera=\(currentCameraRole)&zoom=\(zoomStr)\(dualParam)\(peerParam)") else {
                 continue
             }
             group.enter()
@@ -1336,26 +1400,31 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     private var latestRoll: Double? = nil
 
     private func sendPreviewFrame(_ data: Data) {
-        let cleanIP = sanitizeIP(currentControllerIP)
-        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
+        let targets = registeredPCIPs()
+        guard !targets.isEmpty else { return }
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
-        var urlStr = "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)"
-        if let p = latestPitch, let r = latestRoll {
-            urlStr += String(format: "&pitch=%.2f&roll=%.2f", p, r)
-        }
-        guard !cleanIP.isEmpty, let url = URL(string: urlStr) else { return }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
-        request.httpBody = data
-        request.timeoutInterval = 1.5
-        
+        let peerParam = peerIpsQueryParam()
+        let group = DispatchGroup()
         isSendingPreview = true
-        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+        for cleanIP in targets {
+            var urlStr = "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(peerParam)"
+            if let p = latestPitch, let r = latestRoll {
+                urlStr += String(format: "&pitch=%.2f&roll=%.2f", p, r)
+            }
+            guard let url = URL(string: urlStr) else { continue }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+            request.httpBody = data
+            request.timeoutInterval = 1.5
+            group.enter()
+            URLSession.shared.dataTask(with: request) { _, _, _ in
+                group.leave()
+            }.resume()
+        }
+        group.notify(queue: DispatchQueue.global()) { [weak self] in
             self?.isSendingPreview = false
-        }.resume()
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -1424,26 +1493,34 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             DispatchQueue.main.async { self.statusMessage = "⚠️ キャリブ静止画撮影エラー" }
             return
         }
-        let cleanIP = sanitizeIP(currentControllerIP)
-        guard !cleanIP.isEmpty else { return }
+        let targets = registeredPCIPs()
+        guard !targets.isEmpty else { return }
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
-        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
-        var urlStr = "http://\(cleanIP):8080/api/calib_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)"
-        if let p = latestPitch, let r = latestRoll {
-            urlStr += String(format: "&sensor_pitch=%.2f&sensor_roll=%.2f", p, r)
-        }
-        guard let url = URL(string: urlStr) else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 6.0
-        URLSession.shared.uploadTask(with: request, from: rawData) { _, resp, _ in
-            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async {
-                self.statusMessage = ok ? "✅ 12MPキャリブ静止画送信完了" : "⚠️ キャリブ送信失敗"
+        let peerParam = peerIpsQueryParam()
+        let group = DispatchGroup()
+        var okCount = 0
+        let lock = NSLock()
+        for cleanIP in targets {
+            var urlStr = "http://\(cleanIP):8080/api/calib_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(peerParam)"
+            if let p = latestPitch, let r = latestRoll {
+                urlStr += String(format: "&sensor_pitch=%.2f&sensor_roll=%.2f", p, r)
             }
-        }.resume()
+            guard let url = URL(string: urlStr) else { continue }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 6.0
+            group.enter()
+            URLSession.shared.uploadTask(with: request, from: rawData) { _, resp, _ in
+                if (resp as? HTTPURLResponse)?.statusCode == 200 {
+                    lock.lock(); okCount += 1; lock.unlock()
+                }
+                group.leave()
+            }.resume()
+        }
+        group.notify(queue: .main) {
+            self.statusMessage = okCount > 0 ? "✅ 12MPキャリブ静止画送信完了 (\(okCount)/\(targets.count)台)" : "⚠️ キャリブ送信失敗"
+        }
     }
     
     // ─────────────────────────────────────────────
@@ -1481,30 +1558,30 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     private func sendTiltDataToPC(pitch: Double, roll: Double) {
-        let cleanIP = sanitizeIP(currentControllerIP)
-        guard !cleanIP.isEmpty, let url = URL(string: "http://\(cleanIP):8080/api/camera_tilt") else { return }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 3.0
-        
+        let targets = registeredPCIPs()
+        guard !targets.isEmpty else { return }
         let payload: [String: Any] = [
             "camera": currentCameraRole,
             "pitch": pitch,
             "roll": roll,
             "timestamp": Date().timeIntervalSince1970
         ]
-        
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        
-        URLSession.shared.dataTask(with: request) { _, response, error in
-            if let error = error {
-                print("[MotionTilt] ❌ PCへの傾き送信失敗:", error.localizedDescription)
-            } else {
-                print("[MotionTilt] ✅ PCへ傾きデータを正常送信完了")
-            }
-        }.resume()
+        let bodyData = try? JSONSerialization.data(withJSONObject: payload)
+        for cleanIP in targets {
+            guard let url = URL(string: "http://\(cleanIP):8080/api/camera_tilt") else { continue }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 3.0
+            request.httpBody = bodyData
+            URLSession.shared.dataTask(with: request) { _, _, error in
+                if let error = error {
+                    print("[MotionTilt] ❌ PC(\(cleanIP))への傾き送信失敗:", error.localizedDescription)
+                } else {
+                    print("[MotionTilt] ✅ PC(\(cleanIP))へ傾きデータを正常送信完了")
+                }
+            }.resume()
+        }
     }
     
     private func sanitizeIP(_ ip: String) -> String {
