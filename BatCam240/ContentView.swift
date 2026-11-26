@@ -161,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.16)
-                        Text("v2.16")
+                        // バージョンバッジ (v2.17)
+                        Text("v2.17")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1023,8 +1023,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         guard isListening else { return }
         
         let cleanIP = sanitizeIP(currentControllerIP)
+        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)&zoom=\(zoomStr)") else {
+        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
+        guard let url = URL(string: "http://\(cleanIP):8080/api/wait_command?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)") else {
             DispatchQueue.main.async {
                 self.statusMessage = "❌ 指示PC IP無効: \(cleanIP)"
             }
@@ -1182,54 +1184,77 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     // ─────────────────────────────────────────────
-    // 解析PCへ動画アップロード
+    // 解析PC & 指示PC 両方へ動画アップロード
     // ─────────────────────────────────────────────
     private func uploadVideo(fileURL: URL) {
-        let targetRawIP = currentAnalysisIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? currentControllerIP
-            : currentAnalysisIP
-        
-        let cleanIP = sanitizeIP(targetRawIP)
-        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        guard let url = URL(string: "http://\(cleanIP):8080/api/analyze_video?camera=\(currentCameraRole)&zoom=\(zoomStr)") else {
-            statusMessage = "❌ 解析PC IP無効: \(cleanIP)"
+        let cleanCtrl = sanitizeIP(currentControllerIP)
+        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
+        var targets: [String] = []
+        if !cleanAnalysis.isEmpty { targets.append(cleanAnalysis) }
+        if !cleanCtrl.isEmpty && !targets.contains(cleanCtrl) { targets.append(cleanCtrl) }
+        guard !targets.isEmpty else {
+            statusMessage = "❌ 送信先PC IP無効"
             isUploading = false
             pollNextCommand()
             return
         }
-        
-        statusMessage = "⏳ 送信中 (-> \(cleanIP):8080)..."
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
-        
+        let isDual = (targets.count >= 2)
+        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
+        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
+        let dualParam = isDual ? "&dual_sent=1" : ""
+
         let config = URLSessionConfiguration.default
         config.waitsForConnectivity = true
         let session = URLSession(configuration: config)
-        
-        let task = session.uploadTask(with: request, fromFile: fileURL) { [weak self] _, response, error in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.isUploading = false
+
+        let group = DispatchGroup()
+        var okCount = 0
+        var lastErr = ""
+        let lock = NSLock()
+
+        DispatchQueue.main.async {
+            self.statusMessage = "⏳ 送信中 (\(targets.count)台のPCへ: \(targets.joined(separator: ", ")))..."
+        }
+
+        for targetIP in targets {
+            guard let url = URL(string: "http://\(targetIP):8080/api/analyze_video?camera=\(currentCameraRole)&zoom=\(zoomStr)\(dualParam)\(analysisParam)") else {
+                continue
+            }
+            group.enter()
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 60
+
+            let task = session.uploadTask(with: request, fromFile: fileURL) { _, response, error in
+                lock.lock()
                 if let httpRes = response as? HTTPURLResponse, httpRes.statusCode == 200 {
-                    self.statusMessage = "✅ 送信完了！(\(self.currentCameraRole))"
+                    okCount += 1
                 } else if let error = error {
-                    self.statusMessage = "❌ 送信失敗(\(cleanIP)): \(error.localizedDescription)"
+                    lastErr += "\(targetIP):\(error.localizedDescription) "
                 } else {
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    self.statusMessage = "❌ 送信失敗: HTTP \(code) (\(cleanIP))"
+                    lastErr += "\(targetIP):HTTP\(code) "
                 }
-                
-                // 送信完了後、キオスクがreadyでなければ自動省電力停止
-                self.applyCameraPowerState()
-                
-                // 送信完了後、再びPC待機ループに戻る
-                self.pollNextCommand()
+                lock.unlock()
+                group.leave()
             }
+            task.resume()
         }
-        task.resume()
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            self.isUploading = false
+            if okCount == targets.count {
+                self.statusMessage = "✅ 送信完了！(\(okCount)台のPCへ送信: \(self.currentCameraRole))"
+            } else if okCount > 0 {
+                self.statusMessage = "⚠️ 一部送信完了(\(okCount)/\(targets.count)) \(lastErr)"
+            } else {
+                self.statusMessage = "❌ 送信失敗: \(lastErr)"
+            }
+            self.applyCameraPowerState()
+            self.pollNextCommand()
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -1274,8 +1299,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
 
     private func sendPreviewFrame(_ data: Data) {
         let cleanIP = sanitizeIP(currentControllerIP)
+        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        var urlStr = "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)"
+        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
+        var urlStr = "http://\(cleanIP):8080/api/preview_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)"
         if let p = latestPitch, let r = latestRoll {
             urlStr += String(format: "&pitch=%.2f&roll=%.2f", p, r)
         }
@@ -1347,7 +1374,9 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         let cleanIP = sanitizeIP(currentControllerIP)
         guard !cleanIP.isEmpty else { return }
         let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
-        var urlStr = "http://\(cleanIP):8080/api/calib_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)"
+        let cleanAnalysis = sanitizeIP(currentAnalysisIP)
+        let analysisParam = cleanAnalysis.isEmpty ? "" : "&analysis_ip=\(cleanAnalysis)"
+        var urlStr = "http://\(cleanIP):8080/api/calib_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)\(analysisParam)"
         if let p = latestPitch, let r = latestRoll {
             urlStr += String(format: "&sensor_pitch=%.2f&sensor_roll=%.2f", p, r)
         }
