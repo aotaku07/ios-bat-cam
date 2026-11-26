@@ -161,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.18)
-                        Text("v2.18")
+                        // バージョンバッジ (v2.19)
+                        Text("v2.19")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -865,7 +865,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             self.sessionQueue.async {
                 if !self.isSessionConfigured {
                     self.session.beginConfiguration()
-                    self.session.sessionPreset = .high
+                    self.session.sessionPreset = .inputPriority
                     guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
                           let input = try? AVCaptureDeviceInput(device: device) else {
                         self.session.commitConfiguration()
@@ -882,10 +882,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
                         self.session.addOutput(self.videoDataOutput)
                     }
-                    if self.session.canAddOutput(self.photoOutput) {
-                        self.photoOutput.isHighResolutionCaptureEnabled = true
-                        self.session.addOutput(self.photoOutput)
-                    }
+                    // ※ photoOutput は常時接続すると240fpsが30fpsへ制限されるため、キャリブ静止画撮影時のみ一時追加する
                     
                     var targetFPS: Int = 30
                     var bestFormat: AVCaptureDevice.Format?
@@ -906,6 +903,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         if bestFormat != nil { break }
                     }
                     
+                    self.session.commitConfiguration()
+
                     var msg = "✅ 標準カメラで起動 (PC待機中)"
                     if let format = bestFormat {
                         do {
@@ -922,7 +921,6 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         }
                     }
                     
-                    self.session.commitConfiguration()
                     self.isSessionConfigured = true
                     DispatchQueue.main.async {
                         self.statusMessage = msg
@@ -1128,10 +1126,29 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("swing_240fps.mp4")
         try? FileManager.default.removeItem(at: tempURL)
         sessionQueue.async {
+            if self.session.outputs.contains(self.photoOutput) {
+                self.session.beginConfiguration()
+                self.session.removeOutput(self.photoOutput)
+                self.session.sessionPreset = .inputPriority
+                self.session.commitConfiguration()
+            }
             if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
                 self.session.beginConfiguration()
+                self.session.sessionPreset = .inputPriority
                 self.session.addOutput(self.movieOutput)
                 self.session.commitConfiguration()
+            }
+            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+               let fmt = self.saved240Format {
+                do {
+                    try device.lockForConfiguration()
+                    if device.activeFormat != fmt {
+                        device.activeFormat = fmt
+                    }
+                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(self.saved240FPS))
+                    device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(self.saved240FPS))
+                    device.unlockForConfiguration()
+                } catch {}
             }
             if let conn = self.movieOutput.connection(with: .video) {
                 conn.isEnabled = true
@@ -1352,8 +1369,15 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         }
         sessionQueue.async {
             self.session.beginConfiguration()
+            if self.session.outputs.contains(self.movieOutput) {
+                self.session.removeOutput(self.movieOutput)
+            }
             if self.session.canSetSessionPreset(.photo) {
                 self.session.sessionPreset = .photo
+            }
+            if !self.session.outputs.contains(self.photoOutput), self.session.canAddOutput(self.photoOutput) {
+                self.photoOutput.isHighResolutionCaptureEnabled = true
+                self.session.addOutput(self.photoOutput)
             }
             self.session.commitConfiguration()
 
@@ -1368,9 +1392,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     private func restore240fpsAfterCalibPhoto() {
         sessionQueue.async {
             self.session.beginConfiguration()
-            if self.session.canSetSessionPreset(.high) {
-                self.session.sessionPreset = .high
+            if self.session.outputs.contains(self.photoOutput) {
+                self.session.removeOutput(self.photoOutput)
             }
+            self.session.sessionPreset = .inputPriority
             if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
                 self.session.addOutput(self.movieOutput)
             }
