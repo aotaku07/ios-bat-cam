@@ -161,8 +161,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.15)
-                        Text("v2.15")
+                        // バージョンバッジ (v2.16)
+                        Text("v2.16")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -746,10 +746,14 @@ struct ContentView: View {
 // ─────────────────────────────────────────────
 // 240fps カメラマネージャー & 遠隔同期 (毎秒2コマ プレビュー送信対応)
 // ─────────────────────────────────────────────
-class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
+class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate {
     let session = AVCaptureSession()
     private let movieOutput = AVCaptureMovieFileOutput()
     private let videoDataOutput = AVCaptureVideoDataOutput()
+    private let photoOutput = AVCapturePhotoOutput()
+    private var saved240Format: AVCaptureDevice.Format?
+    private var saved240FPS: Int = 240
+    private var isCapturingCalibPhoto: Bool = false
     private let previewQueue = DispatchQueue(label: "com.amsp.previewQueue")
     private var lastPreviewSentTime: TimeInterval = 0
     private var isSendingPreview: Bool = false
@@ -878,6 +882,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
                         self.session.addOutput(self.videoDataOutput)
                     }
+                    if self.session.canAddOutput(self.photoOutput) {
+                        self.photoOutput.isHighResolutionCaptureEnabled = true
+                        self.session.addOutput(self.photoOutput)
+                    }
                     
                     var targetFPS: Int = 30
                     var bestFormat: AVCaptureDevice.Format?
@@ -906,6 +914,8 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                             device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
                             device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(targetFPS))
                             device.unlockForConfiguration()
+                            self.saved240Format = format
+                            self.saved240FPS = targetFPS
                             msg = "✅ \(targetFPS)fps ロック成功 (PC待機中)"
                         } catch {
                             msg = "FPS設定失敗 (通常モード)"
@@ -1084,6 +1094,12 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                         }
                     } else if action == "MEASURE_TILT" {
                         self.measureAndSendTilt()
+                    } else if action == "CAPTURE_CALIB_FRAME" {
+                        self.isKioskReadyOrRecording = true
+                        self.startCameraSessionIfNeeded()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + (self.isCameraRunning ? 0.15 : 1.0)) {
+                            self.captureHighResCalibPhoto()
+                        }
                     }
                 }
             }
@@ -1274,6 +1290,77 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         isSendingPreview = true
         URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
             self?.isSendingPreview = false
+        }.resume()
+    }
+
+    // ─────────────────────────────────────────────
+    // PC指示による12MP高解像度キャリブ静止画撮影 ＆ 送信 (/api/calib_frame)
+    // ─────────────────────────────────────────────
+    func captureHighResCalibPhoto() {
+        guard !isRecording, !isCapturingCalibPhoto else { return }
+        isCapturingCalibPhoto = true
+        DispatchQueue.main.async {
+            self.statusMessage = "📸 12MP高解像度キャリブ静止画を撮影中..."
+        }
+        sessionQueue.async {
+            self.session.beginConfiguration()
+            if self.session.canSetSessionPreset(.photo) {
+                self.session.sessionPreset = .photo
+            }
+            self.session.commitConfiguration()
+
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
+                let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+                settings.isHighResolutionPhotoEnabled = true
+                self.photoOutput.capturePhoto(with: settings, delegate: self)
+            }
+        }
+    }
+
+    private func restore240fpsAfterCalibPhoto() {
+        sessionQueue.async {
+            self.session.beginConfiguration()
+            if self.session.canSetSessionPreset(.high) {
+                self.session.sessionPreset = .high
+            }
+            self.session.commitConfiguration()
+            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+               let fmt = self.saved240Format {
+                do {
+                    try device.lockForConfiguration()
+                    device.activeFormat = fmt
+                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(self.saved240FPS))
+                    device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: Int32(self.saved240FPS))
+                    device.unlockForConfiguration()
+                } catch {}
+            }
+            self.isCapturingCalibPhoto = false
+        }
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        defer { restore240fpsAfterCalibPhoto() }
+        guard error == nil, let rawData = photo.fileDataRepresentation() else {
+            DispatchQueue.main.async { self.statusMessage = "⚠️ キャリブ静止画撮影エラー" }
+            return
+        }
+        let cleanIP = sanitizeIP(currentControllerIP)
+        guard !cleanIP.isEmpty else { return }
+        let zoomStr = String(format: "%.2f", Double(currentZoomFactor))
+        var urlStr = "http://\(cleanIP):8080/api/calib_frame?camera=\(currentCameraRole)&zoom=\(zoomStr)"
+        if let p = latestPitch, let r = latestRoll {
+            urlStr += String(format: "&sensor_pitch=%.2f&sensor_roll=%.2f", p, r)
+        }
+        guard let url = URL(string: urlStr) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 6.0
+        URLSession.shared.uploadTask(with: request, from: rawData) { _, resp, _ in
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async {
+                self.statusMessage = ok ? "✅ 12MPキャリブ静止画送信完了" : "⚠️ キャリブ送信失敗"
+            }
         }.resume()
     }
     

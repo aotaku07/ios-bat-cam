@@ -9,13 +9,13 @@
     <key>CFBundleName</key>
     <string>BatCam240</string>
     <key>CFBundleDisplayName</key>
-    <string>BatCam v2.15</string>
+    <string>BatCam v2.16</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.15</string>
+    <string>2.16</string>
     <key>CFBundleVersion</key>
-    <string>15</string>
+    <string>16</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSCameraUsageDescription</key>
