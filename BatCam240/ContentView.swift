@@ -165,7 +165,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ (v2.20)
-                        Text("v2.22")
+                        Text("v2.23")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1230,38 +1230,31 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("swing_240fps.mp4")
         try? FileManager.default.removeItem(at: tempURL)
         sessionQueue.async {
-            // 録画中は photoOutput と videoDataOutput(ライブプレビュー) を一時解除し、
-            // ISP帯域を movieOutput の 240fps 録画へ100%集中させる
-            var needsCommit = false
-            self.session.beginConfiguration()
-            if self.session.outputs.contains(self.photoOutput) {
-                self.session.removeOutput(self.photoOutput)
-                needsCommit = true
-            }
-            if self.session.outputs.contains(self.videoDataOutput) {
-                self.session.removeOutput(self.videoDataOutput)
-                needsCommit = true
-            }
-            if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
-                self.session.addOutput(self.movieOutput)
-                needsCommit = true
-            }
-            if self.session.sessionPreset != .inputPriority {
+            // キャリブ用の photoOutput が残っていた場合のみ外す (videoDataOutput は付け外しするとセッション再構築で録画失敗するため常時維持)
+            var needsReconfig = false
+            if self.session.outputs.contains(self.photoOutput) || !self.session.outputs.contains(self.movieOutput) || self.session.sessionPreset != .inputPriority {
+                needsReconfig = true
+                self.session.beginConfiguration()
+                if self.session.outputs.contains(self.photoOutput) {
+                    self.session.removeOutput(self.photoOutput)
+                }
+                if !self.session.outputs.contains(self.movieOutput), self.session.canAddOutput(self.movieOutput) {
+                    self.session.addOutput(self.movieOutput)
+                }
                 self.session.sessionPreset = .inputPriority
-                needsCommit = true
+                self.session.commitConfiguration()
             }
-            self.session.commitConfiguration()
-            _ = needsCommit
 
             if !self.session.isRunning {
                 self.session.startRunning()
+                needsReconfig = true
             }
-            // startRunning() 後に必ず 240fps・HDR OFF・手ぶれ補正 OFF をロックする (iOSのリセット対策)
             if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
                 self.applyLockedHighFPS(to: device)
             }
             self.updateMovieOrientation()
-            self.sessionQueue.asyncAfter(deadline: .now() + 0.12) {
+
+            let beginRec = {
                 guard self.isRecording else { return }
                 if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
                     self.applyLockedHighFPS(to: device)
@@ -1269,6 +1262,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
                 if !self.movieOutput.isRecording {
                     self.movieOutput.startRecording(to: tempURL, recordingDelegate: self)
                 }
+            }
+            if needsReconfig {
+                self.sessionQueue.asyncAfter(deadline: .now() + 0.15, execute: beginRec)
+            } else {
+                beginRec()
             }
         }
         
@@ -1319,18 +1317,6 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             if self.movieOutput.isRecording {
                 self.movieOutput.stopRecording()
             } else {
-                // 開始直後など movieOutput がまだ未開始だった場合は待機状態へ安全復帰
-                if !self.session.outputs.contains(self.videoDataOutput), self.session.canAddOutput(self.videoDataOutput) {
-                    self.session.beginConfiguration()
-                    self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
-                    self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
-                    self.session.addOutput(self.videoDataOutput)
-                    self.session.sessionPreset = .inputPriority
-                    self.session.commitConfiguration()
-                }
-                if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-                    self.applyLockedHighFPS(to: device)
-                }
                 DispatchQueue.main.async {
                     self.isUploading = false
                     self.statusMessage = "⚠️ 録画をキャンセルしました (PC待機中)"
@@ -1341,20 +1327,6 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
-        // 録画終了後にライブプレビュー用の videoDataOutput を再接続して待機状態へ戻す
-        sessionQueue.async {
-            if !self.session.outputs.contains(self.videoDataOutput), self.session.canAddOutput(self.videoDataOutput) {
-                self.session.beginConfiguration()
-                self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
-                self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
-                self.session.addOutput(self.videoDataOutput)
-                self.session.sessionPreset = .inputPriority
-                self.session.commitConfiguration()
-            }
-            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-                self.applyLockedHighFPS(to: device)
-            }
-        }
         if let err = error as NSError? {
             let finishedOK = (err.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? false
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputFileURL.path)[.size] as? Int64) ?? 0
