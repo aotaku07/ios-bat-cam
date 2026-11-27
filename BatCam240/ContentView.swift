@@ -165,7 +165,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ (v2.20)
-                        Text("v2.24")
+                        Text("v2.25")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -912,6 +912,23 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             let maxExp = device.activeFormat.maxExposureDuration
             let clampedMaxExp = max(minExp, min(frameDuration, maxExp))
             device.activeMaxExposureDuration = clampedMaxExp
+
+            // マニュアルシャッター指定時はフォーマット/FPSロック直後に必ず再適用 (iOSの自動オート復帰を防止)
+            if self.desiredShutterDenominator > 0, device.isExposureModeSupported(.custom) {
+                let clampedDenom = max(500.0, min(self.desiredShutterDenominator, 4000.0))
+                let targetDuration = CMTime(value: 1, timescale: Int32(clampedDenom))
+                let safeDuration = max(minExp, min(targetDuration, maxExp))
+                let minISO = device.activeFormat.minISO
+                let maxISO = device.activeFormat.maxISO
+                let curISO = device.iso > 0 ? device.iso : 400.0
+                let targetISO = min(maxISO, max(minISO, curISO))
+                device.setExposureModeCustom(duration: safeDuration, iso: targetISO) { [weak self] _ in
+                    DispatchQueue.main.async {
+                        self?.currentISO = targetISO
+                        self?.currentShutterDenominator = clampedDenom
+                    }
+                }
+            }
             device.unlockForConfiguration()
         } catch {
             print("[HighFPS] lockForConfiguration error:", error)
@@ -1031,7 +1048,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     // ─────────────────────────────────────────────
     // シャッタースピード設定 (1/1000〜1/2000秒 マニュアル固定 & オート)
     // ─────────────────────────────────────────────
+    private var desiredShutterDenominator: Double = 0
+
     func setShutterSpeed(denominator: Double) {
+        self.desiredShutterDenominator = denominator
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { return }
         do {
             try device.lockForConfiguration()
