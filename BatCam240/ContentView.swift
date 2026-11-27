@@ -165,7 +165,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ (v2.20)
-                        Text("v2.21")
+                        Text("v2.22")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1262,10 +1262,13 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             }
             self.updateMovieOrientation()
             self.sessionQueue.asyncAfter(deadline: .now() + 0.12) {
+                guard self.isRecording else { return }
                 if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
                     self.applyLockedHighFPS(to: device)
                 }
-                self.movieOutput.startRecording(to: tempURL, recordingDelegate: self)
+                if !self.movieOutput.isRecording {
+                    self.movieOutput.startRecording(to: tempURL, recordingDelegate: self)
+                }
             }
         }
         
@@ -1299,7 +1302,7 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     func stopRecordingAndUpload(controllerIP: String, analysisIP: String, cameraRole: String) {
-        guard isRecording else { return }
+        guard isRecording || movieOutput.isRecording else { return }
         countdownTimer?.invalidate()
         isAutoCountingDown = false
         
@@ -1307,10 +1310,34 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         self.currentAnalysisIP = analysisIP
         self.currentCameraRole = cameraRole
         
-        movieOutput.stopRecording()
         isRecording = false
         isUploading = true
         statusMessage = "⏳ 録画停止・解析PCへ送信中..."
+
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.movieOutput.isRecording {
+                self.movieOutput.stopRecording()
+            } else {
+                // 開始直後など movieOutput がまだ未開始だった場合は待機状態へ安全復帰
+                if !self.session.outputs.contains(self.videoDataOutput), self.session.canAddOutput(self.videoDataOutput) {
+                    self.session.beginConfiguration()
+                    self.videoDataOutput.alwaysDiscardsLateVideoFrames = true
+                    self.videoDataOutput.setSampleBufferDelegate(self, queue: self.previewQueue)
+                    self.session.addOutput(self.videoDataOutput)
+                    self.session.sessionPreset = .inputPriority
+                    self.session.commitConfiguration()
+                }
+                if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+                    self.applyLockedHighFPS(to: device)
+                }
+                DispatchQueue.main.async {
+                    self.isUploading = false
+                    self.statusMessage = "⚠️ 録画をキャンセルしました (PC待機中)"
+                    self.pollNextCommand()
+                }
+            }
+        }
     }
     
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
