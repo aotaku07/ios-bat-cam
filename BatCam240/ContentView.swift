@@ -165,7 +165,7 @@ struct ContentView: View {
                         Spacer()
                         
                         // バージョンバッジ (v2.20)
-                        Text("v2.23")
+                        Text("v2.24")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -907,6 +907,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             let frameDuration = CMTime(value: 1, timescale: Int32(self.saved240FPS))
             device.activeVideoMinFrameDuration = frameDuration
             device.activeVideoMaxFrameDuration = frameDuration
+            // 室内暗所で自動露出が 1/30秒 へ伸びて 30fps に落ちる現象を完全防止 (最大露光時間を 1/240秒 へハードウェアロック)
+            let minExp = device.activeFormat.minExposureDuration
+            let maxExp = device.activeFormat.maxExposureDuration
+            let clampedMaxExp = max(minExp, min(frameDuration, maxExp))
+            device.activeMaxExposureDuration = clampedMaxExp
             device.unlockForConfiguration()
         } catch {
             print("[HighFPS] lockForConfiguration error:", error)
@@ -1256,6 +1261,10 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
 
             let beginRec = {
                 guard self.isRecording else { return }
+                // セッション再構成ゼロでプレビュー出力だけを一時停止し、ISP帯域を240fps録画へ100%集中
+                if let prevConn = self.videoDataOutput.connection(with: .video) {
+                    prevConn.isEnabled = false
+                }
                 if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
                     self.applyLockedHighFPS(to: device)
                 }
@@ -1317,6 +1326,9 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
             if self.movieOutput.isRecording {
                 self.movieOutput.stopRecording()
             } else {
+                if let prevConn = self.videoDataOutput.connection(with: .video) {
+                    prevConn.isEnabled = true
+                }
                 DispatchQueue.main.async {
                     self.isUploading = false
                     self.statusMessage = "⚠️ 録画をキャンセルしました (PC待機中)"
@@ -1327,6 +1339,11 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
     }
     
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        sessionQueue.async {
+            if let prevConn = self.videoDataOutput.connection(with: .video) {
+                prevConn.isEnabled = true
+            }
+        }
         if let err = error as NSError? {
             let finishedOK = (err.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? false
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputFileURL.path)[.size] as? Int64) ?? 0
