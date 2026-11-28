@@ -164,8 +164,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // バージョンバッジ (v2.20)
-                        Text("v2.25")
+                        // バージョンバッジ (v2.26)
+                        Text("v2.26")
                             .font(.system(size: 11, weight: .heavy))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -1525,25 +1525,47 @@ class Camera240Manager: NSObject, ObservableObject, AVCaptureFileOutputRecording
         guard !isRecording, !isCapturingCalibPhoto else { return }
         isCapturingCalibPhoto = true
         DispatchQueue.main.async {
-            self.statusMessage = "📸 12MP高解像度キャリブ静止画を撮影中..."
+            self.statusMessage = "📸 240fps同画角(16:9)キャリブ静止画を撮影中..."
         }
         sessionQueue.async {
             self.session.beginConfiguration()
             if self.session.outputs.contains(self.movieOutput) {
                 self.session.removeOutput(self.movieOutput)
             }
-            if self.session.canSetSessionPreset(.photo) {
-                self.session.sessionPreset = .photo
-            }
+            // ※ .photo (4:3 12MP) に切り替えると240fps録画(16:9)と画角(FOV)が約10%ズレるため、
+            //    .inputPriority を維持し、saved240Format と同一 videoFieldOfView の最高解像度 16:9 フォーマットで撮影する
+            self.session.sessionPreset = .inputPriority
             if !self.session.outputs.contains(self.photoOutput), self.session.canAddOutput(self.photoOutput) {
-                self.photoOutput.isHighResolutionCaptureEnabled = true
+                self.photoOutput.isHighResolutionCaptureEnabled = false
                 self.session.addOutput(self.photoOutput)
+            }
+            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+               let refFmt = self.saved240Format {
+                let refFov = refFmt.videoFieldOfView
+                var bestCalibFmt: AVCaptureDevice.Format = refFmt
+                var bestPixels: Int32 = 0
+                for fmt in device.formats {
+                    let dims = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
+                    let aspect = Double(dims.width) / Double(max(dims.height, 1))
+                    let fovDiff = abs(fmt.videoFieldOfView - refFov)
+                    let pix = dims.width * dims.height
+                    if abs(aspect - (16.0 / 9.0)) < 0.04 && fovDiff < 1.5 && pix > bestPixels {
+                        bestPixels = pix
+                        bestCalibFmt = fmt
+                    }
+                }
+                do {
+                    try device.lockForConfiguration()
+                    device.activeFormat = bestCalibFmt
+                    device.videoZoomFactor = max(1.0, min(self.currentZoomFactor, device.activeFormat.videoMaxZoomFactor))
+                    device.unlockForConfiguration()
+                } catch {}
             }
             self.session.commitConfiguration()
 
             self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
                 let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
-                settings.isHighResolutionPhotoEnabled = true
+                settings.isHighResolutionPhotoEnabled = false
                 self.photoOutput.capturePhoto(with: settings, delegate: self)
             }
         }
